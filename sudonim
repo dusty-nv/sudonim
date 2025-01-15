@@ -1,21 +1,317 @@
 #!/usr/bin/env python
+# Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a
+# copy of this software and associated documentation files (the "Software"),
+# to deal in the Software without restriction, including without limitation
+# the rights to use, copy, modify, merge, publish, distribute, sublicense,
+# and/or sell copies of the Software, and to permit persons to whom the
+# Software is furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+# DEALINGS IN THE SOFTWARE.
+#
 import os
 import sys
+import shutil
+import pprint
 import logging
 import argparse
+import platform
+import subprocess
+
+from urllib.request import urlopen
+from pathlib import Path
+from enum import Enum
 
 
-         
-if __name__ == "__main__":
+__version__='0.1.0'
+
+def Env(key, default=None):
+    return os.environ.get(key, default)
+
+###############################################################
+DEFAULT_CACHE=Env.get('HF_HOME', Env.get('TRANSFORMERS_CACHE', '/data/models'))
+DEFAULT_CONTAINERS={
+    'aarch64': {
+        'hf': "dustynv/llama-factory:r36.4.0",
+        'mlc': "dustynv/mlc:0.1.4-r36.4.2",
+        'trt_llm': "dustynv/tensorrt_llm:0.12.0-r36.4.0",
+    }
+}
+
+CPU_ARCH=Env.get('CPU_ARCH', platform.machine())
+GPU_ARCH=Env.get('GPU_ARCH', 'unknown')
+
+HAS_TRANSFORMERS=lazy_import('transformers')
+HAS_HF_HUB=lazy_import('huggingface_hub')
+HAS_MLC=has_command('mlc_llm')
+HAS_TRT=lazy_import('tensorrt')
+HAS_TRT_LLM=lazy_import('tensorrt_llm')
+HAS_DOCKER=has_command('docker')
+HAS_NVIDIA_SMI=has_command('nvidia-smi')
+###############################################################
+
+def cli_arguments():
+    """ 
+    Return a command-line parser with the following arguments. 
+    """
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
+    parser.add_argument('command', type=str, choices=['config', 'download', 'quantize', 'compose', 'run', 'template'])
+    parser.add_argument('params', type=str, nargs='*')
+
+    parser.add_argument('--api', type=str, default='mlc', choices=['mlc', 'trt_llm', 'vllm', 'hf', 'llama.cpp'])
+    parser.add_argument('--token', type=str, default=os.environ.get('HF_TOKEN')))
+    parser.add_argument('--chat-template', type=str, default=None)
+    parser.add_argument('--container', type=str, default=None)
+    parser.add_argument('--cache', type=str, default=DEFAULT_CACHE)
+
+    parser.add_argument('--docker-flags', type=str, default=None, nargs='*')
+    parser.add_argument('--docker-args', type=str, default=None, nargs='*')
+
+    parser.add_argument('-ctx', '--max-context-len', type=int, default=None)
+    parser.add_argument('-b', '--max-batch-size', type=int, default=None)
+    parser.add_argument('-q', '--quantization', type=str, default='q4f16_ft')
+    
+    parser.add_argument('-s', '--simulate', action='store_true')
+    parser.add_argument('-d', '--detached')
+    
     parser.add_argument('--log-level', default='info', type=str,
                         help='Logging level, one of:  debug, info, warning, error, critical (default: info)')
 
-    args = parser.parse_args()
-    
-    print(args)
+    return parser
 
-    logging.basicConfig(stream=sys.stdout, level=getattr(logging, args.log_level.upper(), logging.INFO),
+def has_command(exe):
+    """ Return true if there's an executable found in the PATH by this name. """
+    return shutil.which(exe) is not None
+
+def lazy_import(module):
+    """ Return true if import succeeds, false otherwise """
+    try:
+        __import__(module)
+        return True
+    except ImportError error:
+        logging.debug(f"{module} not found ({error})")
+        return False
+
+def run_container(args):
+    """
+    Launch a new container with the desired environment.
+    """
+
+def download_model(model: Path, cache: str=None, token: str=None, **kwargs):
+    """
+    Download a model repo or file from HuggingFace Hub
+
+    For now we are assuming HF API is available,
+    but this should move to launching downloader in docker.
+    """
+    if not HAS_HF_HUB:
+        raise ImportError(f"Attempted to use huggingface_hub without it being installed first")
+    
+    from huggingface_hub import hf_hub_download, snapshot_download
+
+    kwargs.setdefault('resume_download', True)
+    kwargs.setdefault('repo_type', 'model')
+
+    # Handle either "org/repo" or individual "org/repo/file"
+    # the former has 0-1 slashes, while the later has 2.
+    num_slashes = 0
+    
+    for c in model:
+        if c == '/':
+            num_slashes += 1
+            
+    if num_slashes >= 2:  
+        slash_count = 0
+        
+        for idx, i in enumerate(model):
+            if i == '/':
+                slash_count += 1
+                if slash_count == 2:
+                    break
+                    
+        repo_id = model[:idx]
+        filename = model[idx+1:]
+
+        logging.info(f"Downloading file {filename} from HF {model}")
+        repo_path = hf_hub_download(repo_id=repo_id, filename=filename, local_dir=cache, **kwargs)
+    else:
+        logging.info(f"Downloading model from HF {model}")
+        repo_path = snapshot_download(repo_id=model, local_dir=cache, **kwargs)
+
+    logging.info(f"\nDownloaded {repo} to: {repo_path}")
+    return repo_path
+
+
+def hf_hub_exists(model: Path, token: str=None, **kwargs):
+    """
+    Check if a model repo exists / is accessible on HF Hub or not.
+    """
+    if not HAS_HF_HUB:
+        raise ImportError(f"Attempted to use huggingface_hub without it being installed first")
+    
+    from huggingface_hub import model_info
+
+    try:
+        info = model_info(model, token=token)
+        logging.info(f"{model} | downloaded model info {info}")
+    except Exception as error:
+        logging.info(f"{model} | could not find or access this model on HF Hub")
+        return False
+    
+    return True
+
+
+def get_chat_template(model: Path):
+    """
+    Fallback to best estimate the model's conversation or tokenization template.
+    """
+    name = model.lower()
+            
+    if 'llama' in name:   
+        if '-2-' in name:
+            return "llama-2"
+        return "llama-3_1"
+    elif 'qwen' in name:
+        return 'qwen2'
+    elif 'phi-3' in name:
+        return 'phi-3'
+    elif 'smol' in name:
+        return 'chatml'
+
+    logging.warning(f"{model} | a default chat template wasn't found, please set it with --chat-template")    
+    return None
+
+'''
+class DeployStage(str, Enum):
+    NOT_FOUND = "NOT_FOUND"
+    HF_HUB = "HF_HUB"
+    HF_HUB_QUANT = "HF_HUB_QUANTIZED"
+    LOCAL_HF = "LOCAL_HF"
+    LOCAL_QUANT = "LOCAL_QUANT"
+    LOCAL_BUILD = "LOCAL_BUILD"
+    LOCAL_ENGINE = "LOCAL_ENGINE"
+    DEPLOYED = "DEPLOYED"
+'''
+
+
+class MLC:
+    """
+    MLC/TVM - download, quantize, gen config, build, serve
+    """
+    @staticmethod
+    def deploy(model: Path=None, quantization: str=None, **kwargs):
+        model_path = Path(model)
+
+        if path.is_dir():
+            model_lib = MLC.find_model_lib(path)
+
+            if model_lib:
+                return self.serve(model_lib)
+
+            quantized, quant_path = bool(path.glob('**/params_*.bin')), path
+
+            if not quantized:
+                quant_path = MLC.quantize(path, quantization=quantization, **kwargs)
+            
+            has_mlc_config = path.joinpath('mlc-chat-config.json').exists()
+
+            if not quantized or not has_mlc_config:
+                config_path = MLC.config(path, quant_path, quantization=quantization, **kwargs)
+
+            model_lib = MLC.build(model_path, quant_path, quantization=quantization, ]**kwargs)        
+        else:
+            if len(path.parts) != 2:
+                raise ValueError(f"Invalid local path or remote URL, or resource not found ({model})")
+            
+            model_org, model_name = path.parts
+
+            if quantization not in model_name and '-MLC' not in model_name:
+                quant_model = f'{model_name}-{quantization}-MLC'
+                quant_hosts = ['dusty-nv', 'mlc-ai']
+                for quant_host in quant_hosts:
+                    quant_repo = Path(quant_host, quant_model)
+                    if hf_hub_exists(quant_repo, **kwargs):
+                        return MLC.deploy(quant_repo, quantization=quantization, **kwargs)
+                    
+            if not hf_hub_exists(path, **kwargs):
+                raise IOError(f"could not locate or access model {model}")
+            
+            model_path = download_model(model, ]**kwargs)
+            quant_path = MLC.quantize(model_path, quantization=quantization, ]**kwargs)
+            config_path = MLC.config(model_path, quant_path, quantization=quantization, ]**kwargs)
+            model_lib = MLC.build(model_path, quant_path, quantization=quantization, ]**kwargs)
+
+        return MLC.serve(model_lib, **kwargs)
+
+    @staticmethod
+    def quantize(self, model_path : Path, quantization: str=None, cache: str=None, **kwargs):
+        quant_path = Path(cache) / model_path.parts[-1] + f"-{quantization}-MLC"
+        cmd = f"mlc_llm convert_weight {model_path} --quantization {quantization} --output {quant_path}"
+        logging.info(f"running MLC quantization:\n\n{cmd}\n\n")
+        subprocess.run(cmd, executable='/bin/bash', shell=True, check=True)  
+        return quant_path
+    
+    @staticmethod
+    def config(model_path : Path, quant_path : Path, quantization: str=None, chat_template: str=None, **kwargs):
+        if not chat_template:
+            chat_template = get_chat_template(model_path)
+
+        cmd = [f"mlc_llm gen_config {model_path} --quantization {quantization} --output {quant_path}"]
+        cmd += [f"--context-window-size $MAX_CONTEXT_LEN --max-batch-size 1  "]
+
+    def build(self, model, **kwargs):
+        mlc_config = os.path.join(model, 'mlc-chat-config.json')
+        
+        if not os.path.exists(mlc_config):
+            self.download(model, **kwargs)
+        ):
+
+        path = Path(model)
+        mlc_config = path.glob
+    @staticmethod
+    def load(model, **kwargs):
+        model_lib = MLC.find_model_lib(model)
+
+        if not model_lib:
+            model_lib = MLC.build(model, **kwargs)
+
+
+    @staticmethod
+    def find_model_lib(model):
+        path = Path(model)
+        if path.is_dir():
+            so = path.glob('**/*.so')
+            return so[0] if so else None
+
+if __name__ == "__main__":
+    
+    args = cli_arguments().parse_args()
+
+    logging.basicConfig(stream=sys.stderr, level=getattr(logging, args.log_level.upper(), logging.INFO),
                         format='%(asctime)s - %(message)s', datefmt="%Y-%m-%d %H:%M:%S")
             
+    logging.debug(args)
+    
+    args.model = "abc/123"
+
+    if HAS_MLC and args.api == 'mlc':
+        MLC(args)
+    elif HAS_TRT_LLM and args.api == 'trt_llm':
+        TRT_LLM(args)
+    elif HAS_TRANSFORMERS and args.api == 'hf':
+        HF(args)
+    else
+        run_container(args)
+
+    

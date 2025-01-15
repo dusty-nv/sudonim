@@ -1,2 +1,2 @@
 # sudonim
-NIMs powershell for launching local AI microservices and open-stack model templates
+NIMs powershell and docker-compose generator for downloading/quantizing/serving genAI models in containerized microservices that provide local OpenAI API endpoints you can query from langchain, OpenWebUI, Python/JavaScript, ect.
