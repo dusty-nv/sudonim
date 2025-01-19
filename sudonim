@@ -1,5 +1,5 @@
-#!/usr/bin/env python
-# Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
+#!/usr/bin/env python3
+# Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
 # copy of this software and associated documentation files (the "Software"),
@@ -27,6 +27,7 @@ import logging
 import argparse
 import platform
 import subprocess
+import xml.etree.ElementTree as ET
 
 from urllib.request import urlopen
 from pathlib import Path
@@ -35,29 +36,7 @@ from enum import Enum
 
 __version__='0.1.0'
 
-def Env(key, default=None):
-    return os.environ.get(key, default)
 
-###############################################################
-DEFAULT_CACHE=Env.get('HF_HOME', Env.get('TRANSFORMERS_CACHE', '/data/models'))
-DEFAULT_CONTAINERS={
-    'aarch64': {
-        'hf': "dustynv/llama-factory:r36.4.0",
-        'mlc': "dustynv/mlc:0.1.4-r36.4.2",
-        'trt_llm': "dustynv/tensorrt_llm:0.12.0-r36.4.0",
-    }
-}
-
-CPU_ARCH=Env.get('CPU_ARCH', platform.machine())
-GPU_ARCH=Env.get('GPU_ARCH', 'unknown')
-
-HAS_TRANSFORMERS=lazy_import('transformers')
-HAS_HF_HUB=lazy_import('huggingface_hub')
-HAS_MLC=has_command('mlc_llm')
-HAS_TRT=lazy_import('tensorrt')
-HAS_TRT_LLM=lazy_import('tensorrt_llm')
-HAS_DOCKER=has_command('docker')
-HAS_NVIDIA_SMI=has_command('nvidia-smi')
 ###############################################################
 
 def cli_arguments():
@@ -66,59 +45,292 @@ def cli_arguments():
     """
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
-    parser.add_argument('command', type=str, choices=['config', 'download', 'quantize', 'compose', 'run', 'template'])
+    parser.add_argument('command', type=str, choices=['serve'], nargs='*', default='serve')
     parser.add_argument('params', type=str, nargs='*')
 
+    parser.add_argument('--model', type=str, default=None, help="URL or local path to the model")
     parser.add_argument('--api', type=str, default='mlc', choices=['mlc', 'trt_llm', 'vllm', 'hf', 'llama.cpp'])
-    parser.add_argument('--token', type=str, default=os.environ.get('HF_TOKEN')))
+    parser.add_argument('--token', type=str, default=Env.HF_TOKEN)
+    parser.add_argument('--quantization', type=str, default='q4f16_ft', choices=['q4f16_ft', 'q4f16_1'])
     parser.add_argument('--chat-template', type=str, default=None)
-    parser.add_argument('--container', type=str, default=None)
-    parser.add_argument('--cache', type=str, default=DEFAULT_CACHE)
 
-    parser.add_argument('--docker-flags', type=str, default=None, nargs='*')
-    parser.add_argument('--docker-args', type=str, default=None, nargs='*')
+    parser.add_argument('--cache', type=str, default=Env.CACHE)
+    parser.add_argument('--cache-hf', type=str, default=None)
+    parser.add_argument('--cache-mlc', type=str, default=None)
+    parser.add_argument('--cache-trt', type=str, default=None)
 
-    parser.add_argument('-ctx', '--max-context-len', type=int, default=None)
-    parser.add_argument('-b', '--max-batch-size', type=int, default=None)
-    parser.add_argument('-q', '--quantization', type=str, default='q4f16_ft')
+    parser.add_argument('--max-context-len', type=int, default=None)
+    parser.add_argument('--max-batch-size', type=int, default=None)
+    parser.add_argument('--prefill-chunk', type=int, default=None)
+
+    parser.add_argument('--host', type=str, default='0.0.0.0')
+    parser.add_argument('--port', type=int, default=9000)
     
-    parser.add_argument('-s', '--simulate', action='store_true')
-    parser.add_argument('-d', '--detached')
-    
-    parser.add_argument('--log-level', default='info', type=str,
-                        help='Logging level, one of:  debug, info, warning, error, critical (default: info)')
+    parser.add_argument('--version', action='store_true', help='print system/environment info')
+    parser.add_argument('--verbose', action='store_true')
+    parser.add_argument('--log-level', default=None, type=str, choices=['debug', 'info', 'warning', 'error', 'critical'])
 
     return parser
 
+###############################################################
+
+def setup_env():
+    """ 
+    Configure environment variables and device enumeration.
+    """
+    logging.basicConfig(
+        stream=sys.stderr, 
+        level=getattr(logging, getenv('LOG_LEVEL', 'info').upper(), logging.INFO),
+        format='%(asctime)s - %(message)s', datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    
+    Env = Environment()
+    gpu = gpu_device_query()
+
+    Env.CPU_ARCH = platform.machine()
+    Env.NUM_CPU = os.cpu_count()
+    Env.NUM_GPU = gpu.get('attached_gpus', 0)
+    Env.CUDA_VERSION = gpu.get('cuda_version')
+    Env.NVIDIA_DRIVER = gpu.get('driver_version')
+    Env.GPU = gpu.get('gpu')
+
+    Env.CONTAINERS = {
+        'jp61': {
+            'hf': "dustynv/llama-factory:r36.4.0",
+            'mlc': "dustynv/mlc:0.19.0-r36.4.0",
+            'vllm': "dustynv/vllm:0.6.6.post1-r36.4.0",
+            'trt_llm': "dustynv/tensorrt_llm:0.12.0-r36.4.0",
+        }
+    }
+
+    Env.CACHE = str(Path(
+        getenv(
+            ['HF_HUB_CACHE', 'TRANSFORMERS_CACHE', 'HF_HOME'], 
+            '~/.cache/huggingface'
+        )
+    ).expanduser().parent)
+
+    Env.HF_TOKEN = getenv(['HF_TOKEN', 'HUGGINGFACE_TOKEN'])
+    Env.HAS_MLC = has_command('mlc_llm')
+    Env.HAS_HF_HUB = has_import('huggingface_hub')
+    Env.HAS_NVIDIA_SMI = has_command('nvidia-smi')
+    
+    #HAS_TRT=has_import('tensorrt')
+    #HAS_TRT_LLM=has_import('tensorrt_llm')
+    #HAS_DOCKER=has_command('docker')
+    #HAS_TRANSFORMERS=has_import('transformers')
+    return Env
+
+class Environment(dict):
+    """ Environment variables """
+    def __init__(self, *args, **kwargs):
+        dict.__init__(self, *args, **kwargs)
+
+    def __getattr__(self, key):
+        return self[key]
+
+    def __setattr__(self, key, value):
+        self[key] = value
+
+    def __getstate__(self):
+        return self.__dict__
+
+    def __setstate__(self, value):
+        self.__dict__ = value
+
+    def format(self, obj=None, key=None, sep='#', column=22, width=60, margin=2, indent=2, level=0):
+        """ Print a nested tree of objects with aligned columns """
+        txt = ''
+        mse = ' ' * margin + sep
+        pad = mse + ' ' * (indent * level)
+
+        def pad_row(text):
+            return text.ljust(width+1) + sep + '\n'
+
+        if level <= 1:    sym = ''
+        elif level == 2:  sym = '* '
+        else:             sym = '- '
+
+        if not obj:
+            if level > 0:
+                return txt
+            obj = self
+
+        if not key:
+            for key in obj:
+                txt += self.format(obj=obj[key], key=key, sep=sep, column=column, 
+                        width=width, margin=margin, indent=indent, level=level+1)
+            div = mse + sep * (width-1) + '\n'
+            blank = mse.ljust(width+1) + '#\n'
+            return ''.join([div,
+                pad_row(f"{mse} {args.api.upper()} Device Configuration "),
+                div, blank, txt, blank, div,
+            ])
+
+        if isinstance(obj, dict):
+            if key:
+                txt += pad_row(f'{pad}{sym}{key}')
+            for x in obj:
+                txt += self.format(obj=obj[x], key=x, sep=sep, column=column, 
+                     width=width, margin=margin, indent=indent, level=level+1)
+        elif isinstance(obj, list) and isinstance(obj[0], (dict, list)):
+            if len(obj) > 1:
+                if key:
+                    txt += pad_row(f'{pad}{sym}{key}'.ljust(column))
+                for x in obj:
+                    txt += self.format(obj=obj[x], key=x, sep=sep, column=column, 
+                             width=width, margin=margin, indent=indent, level=level+1)
+            else:
+                txt += pad_row(f'{pad+sym+key}'.ljust(column) + str(obj[0]))  
+        else:
+            txt += pad_row(f"{pad+sym+key}".ljust(column) + str(obj))
+
+        return txt
+         
+###############################################################
+
+def shell(cmd, echo=True, capture_output=False, **kwargs):
+    """ 
+    Run shell command and return the result 
+    """
+    if not isinstance(cmd, list):
+        cmd = [cmd]
+        
+    if echo:
+        endline = ' \\\n    '
+        echo = echo if isinstance(echo, str) else 'Running shell command:'
+        logging.info(f"{echo}:\n\n  {endline.join(cmd)}\n")
+
+    kwargs.setdefault('executable', '/bin/bash')
+    kwargs.setdefault('shell', True)
+    kwargs.setdefault('check', True)
+    kwargs.setdefault('capture_output', capture_output)
+    kwargs.setdefault('text', capture_output)
+
+    return subprocess.run(' '.join(cmd), **kwargs)
+
+def subshell(cmd, capture_output=True, **kwargs):
+    """ 
+    Run a shell and capture the output by default
+    """
+    return shell(cmd, capture_output=capture_output, **kwargs).stdout
+
 def has_command(exe):
-    """ Return true if there's an executable found in the PATH by this name. """
+    """
+    Return true if there's an executable found in the PATH by this name. 
+    """
     return shutil.which(exe) is not None
 
-def lazy_import(module):
-    """ Return true if import succeeds, false otherwise """
+def has_import(module):
+    """ 
+    Return true if import succeeds, false otherwise 
+    """
     try:
         __import__(module)
         return True
-    except ImportError error:
+    except ImportError as error:
         logging.debug(f"{module} not found ({error})")
         return False
 
-def run_container(args):
+def gpu_device_query():
+    """ 
+    Get GPU device info from nvidia-smi 
     """
-    Launch a new container with the desired environment.
+    try:
+        return xmlToJson(subshell('/usr/sbin/nvidia-smi -q -x', echo='Running nvidia-smi query'))
+    except Exception as error:
+        logging.warning(f'Failed to query GPU devices from nvidia-smi ({error})')
+    
+def getenv(keys, default=None):
+    """ 
+    Get environment variable from the OS with fallback options.
     """
+    if not isinstance(keys, list):
+        keys = [keys]
 
-def download_model(model: Path, cache: str=None, token: str=None, **kwargs):
+    while len(keys) > 0:
+        env = keys.pop(0)
+        if env in os.environ:
+            return os.environ[env] 
+        
+    return default
+     
+def xmlToJson(tree, nan=[], blacklist=[], rename={}):
+    """ 
+    Convert XML to JSON and filter the keys.
+    """
+    response = {}
+
+    if not nan:
+        nan = ['N/A', 'Unknown Error', 'None', None]
+
+    if not blacklist:
+        blacklist = [
+            'gpu_reset_status', 'ibmnpu', 'temperature',
+            'gpu_power_readings', 'module_power_readings'
+        ]
+
+    if not rename:
+        rename = {
+            'product_name': 'name',
+            'product_architecture': 'arch',
+        }
+
+    def is_nan(text):
+        text = text.lower()
+        for n in nan:
+            if n:
+                if n.lower() in text:
+                    return True
+            else:
+                if not text:
+                    return True
+        return False
+    
+    if isinstance(tree, str):
+        tree = ET.fromstring(tree)
+
+    for child in tree:
+        if child.tag in blacklist:
+            continue
+        if child.tag in rename:
+            child.tag = rename[child.tag]
+
+        if len(list(child)) > 0:
+            children = xmlToJson(child)
+            if children:
+                if child.tag in response:
+                    if isinstance(response[child.tag], list):
+                        response[child.tag].append(children)
+                    else:
+                        response[child.tag] = [response[child.tag], children]
+                else:      
+                    response[child.tag] = children
+        else:
+            text = child.text.strip()
+            if not is_nan(text):
+                response[child.tag] = text
+
+    return response
+
+###############################################################
+
+def download_model(model: str, cache: str=None, token: str=None, flatten=False, **kwargs):
     """
     Download a model repo or file from HuggingFace Hub
 
     For now we are assuming HF API is available,
     but this should move to launching downloader in docker.
     """
-    if not HAS_HF_HUB:
+    if not Env.HAS_HF_HUB:
         raise ImportError(f"Attempted to use huggingface_hub without it being installed first")
     
     from huggingface_hub import hf_hub_download, snapshot_download
+
+    print('DOWNLOAD', cache, model)
+    cache = os.path.join(cache, model.replace('/', '--') if flatten else model)
+
+    os.makedirs(cache, mode=0o755, exist_ok=True)
 
     kwargs.setdefault('resume_download', True)
     kwargs.setdefault('repo_type', 'model')
@@ -143,36 +355,34 @@ def download_model(model: Path, cache: str=None, token: str=None, **kwargs):
         repo_id = model[:idx]
         filename = model[idx+1:]
 
-        logging.info(f"Downloading file {filename} from HF {model}")
-        repo_path = hf_hub_download(repo_id=repo_id, filename=filename, local_dir=cache, **kwargs)
+        logging.info(f"Downloading file {filename} from HF Hub - {model}")
+        repo_path = hf_hub_download(repo_id=repo_id, filename=filename, local_dir=cache, token=token, **kwargs)
     else:
-        logging.info(f"Downloading model from HF {model}")
-        repo_path = snapshot_download(repo_id=model, local_dir=cache, **kwargs)
+        logging.info(f"Downloading model from HF Hub - {model}")
+        repo_path = snapshot_download(repo_id=model, local_dir=cache, token=token, **kwargs)
 
-    logging.info(f"\nDownloaded {repo} to: {repo_path}")
+    logging.info(f"Downloaded {model} to:\n    {repo_path}\n")
     return repo_path
 
-
-def hf_hub_exists(model: Path, token: str=None, **kwargs):
+def hf_hub_exists(model: str, token: str=None, **kwargs):
     """
     Check if a model repo exists / is accessible on HF Hub or not.
     """
-    if not HAS_HF_HUB:
+    if not Env.HAS_HF_HUB:
         raise ImportError(f"Attempted to use huggingface_hub without it being installed first")
     
     from huggingface_hub import model_info
 
     try:
         info = model_info(model, token=token)
-        logging.info(f"{model} | downloaded model info {info}")
+        logging.debug(f"{model} | downloaded model info:\n{pprint.pformat(info, indent=2)}")
     except Exception as error:
-        logging.info(f"{model} | could not find or access this model on HF Hub")
+        logging.error(f"{model} | could not find or access this model on HF Hub ({error})")
         return False
     
     return True
 
-
-def get_chat_template(model: Path):
+def get_chat_template(model):
     """
     Fallback to best estimate the model's conversation or tokenization template.
     """
@@ -192,126 +402,174 @@ def get_chat_template(model: Path):
     logging.warning(f"{model} | a default chat template wasn't found, please set it with --chat-template")    
     return None
 
-'''
-class DeployStage(str, Enum):
-    NOT_FOUND = "NOT_FOUND"
-    HF_HUB = "HF_HUB"
-    HF_HUB_QUANT = "HF_HUB_QUANTIZED"
-    LOCAL_HF = "LOCAL_HF"
-    LOCAL_QUANT = "LOCAL_QUANT"
-    LOCAL_BUILD = "LOCAL_BUILD"
-    LOCAL_ENGINE = "LOCAL_ENGINE"
-    DEPLOYED = "DEPLOYED"
-'''
-
+###############################################################
 
 class MLC:
     """
-    MLC/TVM - download, quantize, gen config, build, serve
+    MLC/TVM deployment - download, quantize, generate config, compile, serve
     """
     @staticmethod
-    def deploy(model: Path=None, quantization: str=None, **kwargs):
+    def deploy(model: str=None, quantization: str=None, **kwargs):
         model_path = Path(model)
 
-        if path.is_dir():
-            model_lib = MLC.find_model_lib(path)
+        if model_path.is_dir():
+            model_lib = MLC.find_model_lib(model_path)
 
             if model_lib:
-                return self.serve(model_lib)
+                return MLC.serve(model_lib, quantization=quantization, **kwargs)
 
-            quantized, quant_path = bool(path.glob('**/params_*.bin')), path
+            quant_path = [x for x in Path(model_path).glob('**/params_*.bin')]
+            quant_path = os.path.dirname(quant_path[0]) if quant_path else None
+            quantized = bool(quant_path)
 
             if not quantized:
                 quant_path = MLC.quantize(path, quantization=quantization, **kwargs)
             
-            has_mlc_config = path.joinpath('mlc-chat-config.json').exists()
+            has_mlc_config = model_path.joinpath('mlc-chat-config.json').exists()
 
             if not quantized or not has_mlc_config:
-                config_path = MLC.config(path, quant_path, quantization=quantization, **kwargs)
+                MLC.config(model_path, quant_path, quantization=quantization, **kwargs)
 
-            model_lib = MLC.build(model_path, quant_path, quantization=quantization, ]**kwargs)        
+            model_lib = MLC.compile(quant_path, quantization=quantization, **kwargs)        
         else:
-            if len(path.parts) != 2:
-                raise ValueError(f"Invalid local path or remote URL, or resource not found ({model})")
+            if len(model_path.parts) != 2:
+                raise ValueError(f"Invalid local path or remote URL, or resource not found ({model_path})")
             
-            model_org, model_name = path.parts
+            model_org, model_name = Path(model).parts
+            is_quant = quantization in model_name and '-mlc' in model_name.lower()
 
-            if quantization not in model_name and '-MLC' not in model_name:
+            if not is_quant:
                 quant_model = f'{model_name}-{quantization}-MLC'
                 quant_hosts = ['dusty-nv', 'mlc-ai']
                 for quant_host in quant_hosts:
-                    quant_repo = Path(quant_host, quant_model)
+                    quant_repo = os.path.join(quant_host, quant_model)
                     if hf_hub_exists(quant_repo, **kwargs):
                         return MLC.deploy(quant_repo, quantization=quantization, **kwargs)
                     
-            if not hf_hub_exists(path, **kwargs):
+            if not hf_hub_exists(model, **kwargs):
                 raise IOError(f"could not locate or access model {model}")
             
-            model_path = download_model(model, ]**kwargs)
-            quant_path = MLC.quantize(model_path, quantization=quantization, ]**kwargs)
-            config_path = MLC.config(model_path, quant_path, quantization=quantization, ]**kwargs)
-            model_lib = MLC.build(model_path, quant_path, quantization=quantization, ]**kwargs)
+            cache_key = 'cache_mlc' if is_quant else 'cache_hf'
+            model_path = download_model(model, cache=kwargs.get(cache_key), token=kwargs.get('token'))
+            return MLC.deploy(model=model_path, quantization=quantization, **kwargs)
 
-        return MLC.serve(model_lib, **kwargs)
+        return MLC.serve(model_lib, quantization=quantization, **kwargs)
 
     @staticmethod
-    def quantize(self, model_path : Path, quantization: str=None, cache: str=None, **kwargs):
-        quant_path = Path(cache) / model_path.parts[-1] + f"-{quantization}-MLC"
-        cmd = f"mlc_llm convert_weight {model_path} --quantization {quantization} --output {quant_path}"
-        logging.info(f"running MLC quantization:\n\n{cmd}\n\n")
-        subprocess.run(cmd, executable='/bin/bash', shell=True, check=True)  
+    def quantize(model_path : str, quantization: str=None, cache_mlc: str=None, **kwargs):
+        quant_path = os.path.join(cache_mlc, os.path.basename(model_path)) + f"-{quantization}-MLC"
+        cmd = [
+            f'mlc_llm convert_weight --quantization {quantization}',
+            f"{model_path}",
+            f"--output {quant_path}"
+        ]
+        shell(cmd, echo='Running MLC quantization')
         return quant_path
     
     @staticmethod
-    def config(model_path : Path, quant_path : Path, quantization: str=None, chat_template: str=None, **kwargs):
-        if not chat_template:
-            chat_template = get_chat_template(model_path)
+    def config(model_path : str, quant_path : str, quantization: str=None, **kwargs):
+        kwargs.setdefault('chat_template', get_chat_template(model_path))
+        cmd = [f'mlc_llm gen_config --quantization {quantization}']
+        cmd += MLC.overrides(packed=False, **kwargs)
+        cmd += [f'--output {quant_path}', f'{model_path}']
+        shell(cmd, echo='Generating MLC configuration')
+        return quant_path
 
-        cmd = [f"mlc_llm gen_config {model_path} --quantization {quantization} --output {quant_path}"]
-        cmd += [f"--context-window-size $MAX_CONTEXT_LEN --max-batch-size 1  "]
-
-    def build(self, model, **kwargs):
-        mlc_config = os.path.join(model, 'mlc-chat-config.json')
-        
-        if not os.path.exists(mlc_config):
-            self.download(model, **kwargs)
-        ):
-
-        path = Path(model)
-        mlc_config = path.glob
     @staticmethod
-    def load(model, **kwargs):
-        model_lib = MLC.find_model_lib(model)
+    def compile(quant_path : str, **kwargs):
+        model_lib = os.path.join(quant_path, f"model.so")
+        cmd = [f"mlc_llm compile --device cuda --opt O3"]
+        cmd += MLC.overrides(**kwargs)
+        cmd += [f"{quant_path}", f"--output {model_lib}"]
+        shell(cmd, echo='Compiling MLC model')
+        return model_lib
 
-        if not model_lib:
-            model_lib = MLC.build(model, **kwargs)
+    @staticmethod
+    def serve(model_lib : str, quantization: str=None, host: str='0.0.0.0', port: int=9000, max_batch_size: int=1, cache_mlc: str=None, **kwargs):
+        model_lib = Path(model_lib)
+        model_lib = model_lib.relative_to(cache_mlc)
+        mode = 'local' if max_batch_size > 1 else 'interactive'
+        cmd = [f"mlc_llm serve --mode {mode} --device cuda",
+               f"--host {host} --port {port}"]
+        cmd += MLC.overrides(exclude=['max_batch_size'], **kwargs)
+        cmd += [f"--model-lib {model_lib}", f"{model_lib.parent}"]
+        return shell(cmd, cwd=cache_mlc)
 
+    @staticmethod
+    def overrides(packed=True, exclude=[], **kwargs):
+        overrides = {'tensor_parallel_shards': Env.NUM_GPU}
+
+        for k,v in kwargs.items():
+            if v and k in MLC.CONFIG_MAP and k not in exclude:
+                overrides[MLC.CONFIG_MAP[k]] = v
+
+        if not overrides:
+            return []
+               
+        if packed:
+            overrides = ';'.join([f'{k}={v}' for k,v in overrides.items()])
+            return [f"--overrides='{overrides}'"]
+        else:
+            return [f"--{k.replace('_', '-')} {v}" for k,v in overrides.items()]
 
     @staticmethod
     def find_model_lib(model):
         path = Path(model)
         if path.is_dir():
-            so = path.glob('**/*.so')
+            so = [x for x in path.glob('**/*.so')]
             return so[0] if so else None
+         
+    # argument name mapping
+    CONFIG_MAP = {
+        'chat_template': 'conv_template',
+        'max_batch_size': 'max_batch_size',
+        'max_context_len': 'context_window_size',
+        'prefill_chunk': 'prefill_chunk_size'
+    }
+    
+
+###############################################################
 
 if __name__ == "__main__":
-    
+
+    Env = setup_env()
     args = cli_arguments().parse_args()
 
-    logging.basicConfig(stream=sys.stderr, level=getattr(logging, args.log_level.upper(), logging.INFO),
-                        format='%(asctime)s - %(message)s', datefmt="%Y-%m-%d %H:%M:%S")
-            
-    logging.debug(args)
-    
-    args.model = "abc/123"
+    if args.verbose:
+        args.log_level = 'debug'
 
-    if HAS_MLC and args.api == 'mlc':
-        MLC(args)
+    if args.log_level:
+        logging.getLogger(__name__).setLevel(
+            getattr(logging, args.log_level.upper(), logging.INFO)
+        )
+
+    if not args.cache_hf:
+        args.cache_hf = os.path.join(args.cache, 'huggingface')
+    if not args.cache_mlc:
+        args.cache_mlc = os.path.join(args.cache, 'mlc_llm')
+    if not args.cache_trt:
+        args.cache_trt = os.path.join(args.cache, 'trt_llm')
+
+    logging.debug(args)
+    logging.info(f'sudonim version {__version__}\n\n{Env.format()}\n')
+
+    if args.version:
+        sys.exit()
+
+    if not args.model:
+        raise ValueError(f"Missing required argument:  --model")
+    
+    if Env.HAS_MLC and args.api == 'mlc':
+        MLC.deploy(**vars(args))
+    else:
+        raise RuntimeError(f"Unsupported configuration or model selected")
+    
+    '''
     elif HAS_TRT_LLM and args.api == 'trt_llm':
         TRT_LLM(args)
     elif HAS_TRANSFORMERS and args.api == 'hf':
         HF(args)
-    else
+    else:
         run_container(args)
-
+    '''
     
