@@ -45,13 +45,14 @@ def cli_arguments():
     """
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
-    parser.add_argument('command', type=str, choices=['serve'], nargs='*', default='serve')
+    parser.add_argument('command', type=str, choices=['download', 'serve'], nargs='*', default='serve')
     parser.add_argument('params', type=str, nargs='*')
 
     parser.add_argument('--model', type=str, default=None, help="URL or local path to the model")
+    parser.add_argument('--dataset', type=str, default=None, help="URL or path to datasets for when they are used")
     parser.add_argument('--api', type=str, default='mlc', choices=['mlc', 'trt_llm', 'vllm', 'hf', 'llama.cpp'])
-    parser.add_argument('--token', type=str, default=Env.HF_TOKEN)
-    parser.add_argument('--quantization', type=str, default='q4f16_ft', choices=['q4f16_ft', 'q4f16_1'])
+    parser.add_argument('--api-key', type=str, default=Env.HF_TOKEN, help="personal access token for gated/private models (either HuggingFace Hub, NVIDIA NGC)")
+    parser.add_argument('--quantization', type=str, default='q4f16_ft', help="the type of quantization to apply to the model (this is often API specific)") #, choices=['q4f16_ft', 'q4f16_1'])
     parser.add_argument('--chat-template', type=str, default=None)
 
     parser.add_argument('--cache', type=str, default=Env.CACHE)
@@ -74,16 +75,10 @@ def cli_arguments():
 
 ###############################################################
 
-def setup_env():
+def setup_environment():
     """ 
     Configure environment variables and device enumeration.
     """
-    logging.basicConfig(
-        stream=sys.stderr, 
-        level=getattr(logging, getenv('LOG_LEVEL', 'info').upper(), logging.INFO),
-        format='%(asctime)s - %(message)s', datefmt="%Y-%m-%d %H:%M:%S"
-    )
-    
     Env = Environment()
     gpu = gpu_device_query()
 
@@ -114,12 +109,17 @@ def setup_env():
     Env.HAS_MLC = has_command('mlc_llm')
     Env.HAS_HF_HUB = has_import('huggingface_hub')
     Env.HAS_NVIDIA_SMI = has_command('nvidia-smi')
-    
+
+    Env.HAS_DOCKER_API=has_import('docker')
+    Env.HAS_DOCKER_CLI=has_command('docker')
+
     #HAS_TRT=has_import('tensorrt')
     #HAS_TRT_LLM=has_import('tensorrt_llm')
-    #HAS_DOCKER=has_command('docker')
     #HAS_TRANSFORMERS=has_import('transformers')
+
     return Env
+
+###############################################################
 
 class Environment(dict):
     """ Environment variables """
@@ -163,7 +163,7 @@ class Environment(dict):
             div = mse + sep * (width-1) + '\n'
             blank = mse.ljust(width+1) + '#\n'
             return ''.join([div,
-                pad_row(f"{mse} {args.api.upper()} Device Configuration "),
+                pad_row(f"{mse} GPU Device Configuration "),
                 div, blank, txt, blank, div,
             ])
 
@@ -186,6 +186,60 @@ class Environment(dict):
             txt += pad_row(f"{pad+sym+key}".ljust(column) + str(obj))
 
         return txt
+
+###############################################################
+
+class ColorLog(logging.Formatter):
+
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKCYAN = '\033[96m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+    grey = "\x1b[38;20m"
+    yellow = "\x1b[33;20m"
+    red = "\x1b[31;20m"
+    bold_red = "\x1b[31;1m"
+    reset = "\x1b[0m"
+
+    format = "%(asctime)s - %(message)s"
+    datefmt = "%Y-%m-%d %H:%M:%S"
+
+    FORMATS = {
+        logging.DEBUG: grey + format + reset,
+        logging.INFO: grey + format + reset,
+        logging.WARNING: yellow + format + reset,
+        logging.ERROR: red + format + reset,
+        logging.CRITICAL: bold_red + format + reset
+    }
+
+    @staticmethod
+    def setup(name=__name__):
+        level = getattr(logging, getenv('LOG_LEVEL', 'info').upper(), logging.INFO)
+        
+        logging.basicConfig(
+            stream=sys.stderr, 
+            level=level,
+            format='%(asctime)s - %(message)s', datefmt="%Y-%m-%d %H:%M:%S"
+        )
+        logger = logging.getLogger(name)
+        logging.getLogger().removeHandler(logging.getLogger().handlers[0])
+        #logger.handlers.clear()
+        ch = logging.StreamHandler()
+        ch.setLevel(level)
+        ch.setFormatter(ColorLog())
+        logger.addHandler(ch)
+        return logger
+    
+    def format(self, record):
+        log_fmt = self.FORMATS.get(record.levelno)
+        formatter = logging.Formatter(log_fmt)
+        return formatter.format(record)
          
 ###############################################################
 
@@ -197,9 +251,9 @@ def shell(cmd, echo=True, capture_output=False, **kwargs):
         cmd = [cmd]
         
     if echo:
-        endline = ' \\\n    '
-        echo = echo if isinstance(echo, str) else 'Running shell command:'
-        logging.info(f"{echo}:\n\n  {endline.join(cmd)}\n")
+        endline = f' \\\n    {ColorLog.OKGREEN}'
+        echo = echo if isinstance(echo, str) else 'Running shell command'
+        logger.info(f"{echo}:\n\n  {ColorLog.OKGREEN}{endline.join(cmd)}{ColorLog.reset}\n")
 
     kwargs.setdefault('executable', '/bin/bash')
     kwargs.setdefault('shell', True)
@@ -229,7 +283,7 @@ def has_import(module):
         __import__(module)
         return True
     except ImportError as error:
-        logging.debug(f"{module} not found ({error})")
+        logger.debug(f"{module} not found ({error})")
         return False
 
 def gpu_device_query():
@@ -239,7 +293,7 @@ def gpu_device_query():
     try:
         return xmlToJson(subshell('/usr/sbin/nvidia-smi -q -x', echo='Running nvidia-smi query'))
     except Exception as error:
-        logging.warning(f'Failed to query GPU devices from nvidia-smi ({error})')
+        logger.warning(f'Failed to query GPU devices from nvidia-smi ({error})')
     
 def getenv(keys, default=None):
     """ 
@@ -255,6 +309,36 @@ def getenv(keys, default=None):
         
     return default
      
+###############################################################
+
+class Docker:
+    """
+    Some basic utilities for starting/stopping containers
+    This requires the docker socket to be mounted:
+      /var/run/docker.sock:/var/run/docker.sock
+    """
+    Client = None
+
+    @staticmethod
+    def client():
+        if not Docker.Client:
+            Docker.Client = docker.from_env()
+        return Docker.Client
+    
+    @staticmethod
+    def stop(name):
+        try:
+            Docker.client().containers.get(name).stop()
+        except Exception as error:
+            logging.error(f"Failed to stop container '{name}' ({error})")
+            Docker.kill(name)
+        
+    @staticmethod
+    def kill(name):
+        Docker.client().containers.get(name).kill()
+
+###############################################################
+
 def xmlToJson(tree, nan=[], blacklist=[], rename={}):
     """ 
     Convert XML to JSON and filter the keys.
@@ -315,7 +399,7 @@ def xmlToJson(tree, nan=[], blacklist=[], rename={}):
 
 ###############################################################
 
-def download_model(model: str, cache: str=None, token: str=None, flatten=False, **kwargs):
+def download_model(model: str, cache: str=None, api_key: str=None, flatten=False, **kwargs):
     """
     Download a model repo or file from HuggingFace Hub
 
@@ -327,8 +411,10 @@ def download_model(model: str, cache: str=None, token: str=None, flatten=False, 
     
     from huggingface_hub import hf_hub_download, snapshot_download
 
-    print('DOWNLOAD', cache, model)
-    cache = os.path.join(cache, model.replace('/', '--') if flatten else model)
+    cache = os.path.join(
+        cache, model.replace('/', '--') 
+        if flatten else model
+    )
 
     os.makedirs(cache, mode=0o755, exist_ok=True)
 
@@ -355,16 +441,16 @@ def download_model(model: str, cache: str=None, token: str=None, flatten=False, 
         repo_id = model[:idx]
         filename = model[idx+1:]
 
-        logging.info(f"Downloading file {filename} from HF Hub - {model}")
-        repo_path = hf_hub_download(repo_id=repo_id, filename=filename, local_dir=cache, token=token, **kwargs)
+        logger.info(f"Downloading file {filename} from HF Hub - {model}")
+        repo_path = hf_hub_download(repo_id=repo_id, filename=filename, local_dir=cache, token=api_key, **kwargs)
     else:
-        logging.info(f"Downloading model from HF Hub - {model}")
-        repo_path = snapshot_download(repo_id=model, local_dir=cache, token=token, **kwargs)
+        logger.info(f"Downloading model from HF Hub - {model}")
+        repo_path = snapshot_download(repo_id=model, local_dir=cache, token=api_key, **kwargs)
 
-    logging.info(f"Downloaded {model} to:\n    {repo_path}\n")
+    logger.info(f"Downloaded {model} to:\n    {repo_path}\n")
     return repo_path
 
-def hf_hub_exists(model: str, token: str=None, **kwargs):
+def hf_hub_exists(model: str, api_key: str=None, **kwargs):
     """
     Check if a model repo exists / is accessible on HF Hub or not.
     """
@@ -374,10 +460,10 @@ def hf_hub_exists(model: str, token: str=None, **kwargs):
     from huggingface_hub import model_info
 
     try:
-        info = model_info(model, token=token)
-        logging.debug(f"{model} | downloaded model info:\n{pprint.pformat(info, indent=2)}")
+        info = model_info(model, token=api_key)
+        logger.debug(f"{model} | downloaded model info:\n{pprint.pformat(info, indent=2)}")
     except Exception as error:
-        logging.error(f"{model} | could not find or access this model on HF Hub ({error})")
+        logger.error(f"{model} | could not find or access this model on HF Hub ({error})")
         return False
     
     return True
@@ -399,7 +485,7 @@ def get_chat_template(model):
     elif 'smol' in name:
         return 'chatml'
 
-    logging.warning(f"{model} | a default chat template wasn't found, please set it with --chat-template")    
+    logger.warning(f"{model} | a default chat template wasn't found, please set it with --chat-template")    
     return None
 
 ###############################################################
@@ -450,7 +536,7 @@ class MLC:
                 raise IOError(f"could not locate or access model {model}")
             
             cache_key = 'cache_mlc' if is_quant else 'cache_hf'
-            model_path = download_model(model, cache=kwargs.get(cache_key), token=kwargs.get('token'))
+            model_path = download_model(model, cache=kwargs.get(cache_key), api_key=kwargs.get('api_key'))
             return MLC.deploy(model=model_path, quantization=quantization, **kwargs)
 
         return MLC.serve(model_lib, quantization=quantization, **kwargs)
@@ -493,7 +579,7 @@ class MLC:
                f"--host {host} --port {port}"]
         cmd += MLC.overrides(exclude=['max_batch_size'], **kwargs)
         cmd += [f"--model-lib {model_lib}", f"{model_lib.parent}"]
-        return shell(cmd, cwd=cache_mlc)
+        return shell(cmd, cwd=cache_mlc, echo='Loading model')
 
     @staticmethod
     def overrides(packed=True, exclude=[], **kwargs):
@@ -526,20 +612,20 @@ class MLC:
         'max_context_len': 'context_window_size',
         'prefill_chunk': 'prefill_chunk_size'
     }
-    
 
 ###############################################################
 
 if __name__ == "__main__":
 
-    Env = setup_env()
+    logger = ColorLog.setup()
+    Env = setup_environment()
     args = cli_arguments().parse_args()
 
     if args.verbose:
         args.log_level = 'debug'
 
     if args.log_level:
-        logging.getLogger(__name__).setLevel(
+        logger.getLogger(__name__).setLevel(
             getattr(logging, args.log_level.upper(), logging.INFO)
         )
 
@@ -550,15 +636,27 @@ if __name__ == "__main__":
     if not args.cache_trt:
         args.cache_trt = os.path.join(args.cache, 'trt_llm')
 
-    logging.debug(args)
-    logging.info(f'sudonim version {__version__}\n\n{Env.format()}\n')
+    if not args.model and not args.dataset and not args.version:
+        raise ValueError(f"Missing required argument:  --model or --dataset")
+    
+    if len(args.command) == 1:
+        args.command = args.command[0]
+
+    if args.command == 'download':
+        asset, repo_type = (args.dataset, 'dataset') if args.dataset else (args.model, 'model')
+        location = download_model(
+            asset, cache=args.cache_hf, 
+            api_key=args.api_key, repo_type=repo_type
+        )
+        logger.info(f"Downloaded {repo_type} {asset} to {location}")
+        sys.exit()
+
+    logger.info(args)
+    logger.info(f'sudonim version {__version__}\n\n{ColorLog.OKGREEN + Env.format() + ColorLog.reset}\n')
 
     if args.version:
         sys.exit()
 
-    if not args.model:
-        raise ValueError(f"Missing required argument:  --model")
-    
     if Env.HAS_MLC and args.api == 'mlc':
         MLC.deploy(**vars(args))
     else:
