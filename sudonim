@@ -21,9 +21,10 @@
 #
 import os
 import sys
+import json
+import ctypes
 import shutil
 import pprint
-import logging
 import argparse
 import platform
 import subprocess
@@ -37,6 +38,35 @@ from enum import Enum
 __version__='0.1.0'
 
 
+
+###############################################################
+
+QUANTIZATIONS = {
+    'mlc': ['q4f16_ft', 'q4f16_1'],
+    'llama_cpp': ['q4_k_m', 'q4_k_l', 'q5_k_s', 'q5_k_m', 'q5_k_l', 'q6_k'],
+}
+
+def find_quantization_api(api: str=None, quantization: str=None, required=True, **kwargs):
+    """ 
+    Deduce the model API from its quantization type if needed.
+    """
+    if api:
+        return api
+    
+    if not quantization:
+        raise ValueError(f"Missing required argument:  --api or --quantization")
+    
+    for quant_api, quantizations in QUANTIZATIONS.items():
+        if quantization in quantizations:
+            return quant_api
+
+    error = f"Could not find API for quantization type {quantization}"
+
+    if required:
+        raise ValueError(error)
+    else:   
+        logging.warning(error)
+
 ###############################################################
 
 def cli_arguments():
@@ -45,20 +75,17 @@ def cli_arguments():
     """
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
-    parser.add_argument('command', type=str, choices=['download', 'serve'], nargs='*', default='serve')
+    parser.add_argument('commands', type=str, choices=['download', 'bench', 'serve', 'stop'], nargs='*', default='serve')
     parser.add_argument('params', type=str, nargs='*')
 
     parser.add_argument('--model', type=str, default=None, help="URL or local path to the model")
     parser.add_argument('--dataset', type=str, default=None, help="URL or path to datasets for when they are used")
-    parser.add_argument('--api', type=str, default='mlc', choices=['mlc', 'trt_llm', 'vllm', 'hf', 'llama.cpp'])
-    parser.add_argument('--api-key', type=str, default=Env.HF_TOKEN, help="personal access token for gated/private models (either HuggingFace Hub, NVIDIA NGC)")
-    parser.add_argument('--quantization', type=str, default='q4f16_ft', help="the type of quantization to apply to the model (this is often API specific)") #, choices=['q4f16_ft', 'q4f16_1'])
-    parser.add_argument('--chat-template', type=str, default=None)
+    parser.add_argument('--tokenizer', type=str, default=None, help="URL or path of tokenizer (used by the benchmark client when needed)")
 
-    parser.add_argument('--cache', type=str, default=Env.CACHE)
-    parser.add_argument('--cache-hf', type=str, default=None)
-    parser.add_argument('--cache-mlc', type=str, default=None)
-    parser.add_argument('--cache-trt', type=str, default=None)
+    parser.add_argument('--api', type=str, default=None, choices=['mlc', 'trt_llm', 'vllm', 'hf', 'llama_cpp'])
+    parser.add_argument('--api-key', type=str, default=Env.HF_TOKEN, help="personal access token for gated/private models (either HuggingFace Hub, NVIDIA NGC)")
+    parser.add_argument('--quantization', type=str, default='q4f16_ft', help=f"the type of quantization to apply to the model {QUANTIZATIONS}") #, choices=['q4f16_ft', 'q4f16_1'])
+    parser.add_argument('--chat-template', type=str, default=None)
 
     parser.add_argument('--max-context-len', type=int, default=None)
     parser.add_argument('--max-batch-size', type=int, default=None)
@@ -66,12 +93,29 @@ def cli_arguments():
 
     parser.add_argument('--host', type=str, default='0.0.0.0')
     parser.add_argument('--port', type=int, default=9000)
-    
+
+    parser.add_argument('--cache-root', type=str, default=Env.CACHE_ROOT)
+
+    for cache, cache_dir in Env.CACHES.items():
+        parser.add_argument(f'--cache-{cache}', type=str, default=cache_dir)
+     
     parser.add_argument('--version', action='store_true', help='print system/environment info')
     parser.add_argument('--verbose', action='store_true')
     parser.add_argument('--log-level', default=None, type=str, choices=['debug', 'info', 'warning', 'error', 'critical'])
 
-    return parser
+    args = parser.parse_args()
+    args.CACHE_ROOT = args.cache_root
+
+    if len(args.commands) == 0:
+        args.commands = ['serve']
+
+    if args.verbose:
+        args.log_level = 'debug'
+
+    if args.log_level:
+        logger.getLogger(__name__).setLevel(getattr(logging, args.log_level.upper(), logging.INFO))
+
+    return args
 
 ###############################################################
 
@@ -80,27 +124,39 @@ def setup_environment():
     Configure environment variables and device enumeration.
     """
     Env = Environment()
-    gpu = gpu_device_query()
+    smi = nvidia_smi_query()
+
+    if CUDA_DEVICES:
+        Env.BOARD_ID = cudaShortName(CUDA_DEVICES[0].name);
+    elif smi.get('gpu'): 
+        Env.BOARD_ID = smi['gpu'].lower().replace(' ', '-')
+    else: 
+        Env.BOARD_ID = "unknown"
+
 
     Env.CPU_ARCH = platform.machine()
     Env.NUM_CPU = os.cpu_count()
-    Env.NUM_GPU = gpu.get('attached_gpus', 0)
-    Env.CUDA_VERSION = gpu.get('cuda_version')
-    Env.NVIDIA_DRIVER = gpu.get('driver_version')
-    Env.GPU = gpu.get('gpu')
+    Env.NUM_GPU = smi.get('attached_gpus', 0)
+    Env.CUDA_VERSION = smi.get('cuda_version')
+    Env.NVIDIA_DRIVER = smi.get('driver_version')
 
-    '''
-    Env.CONTAINERS = {
-        'jp61': {
-            'hf': "dustynv/llama-factory:r36.4.0",
-            'mlc': "dustynv/mlc:0.19.1-r36.4.0",
-            'vllm': "dustynv/vllm:0.6.6.post1-r36.4.0",
-            'trt_llm': "dustynv/tensorrt_llm:0.12.0-r36.4.0",
-        }
-    }
-    '''
+    Env.GPU = CUDA_DEVICES if CUDA_DEVICES else smi.get('gpu', [])
 
-    Env.CACHE = str(Path(
+    def subcache(x):
+        if isinstance(x, str):
+            return {x: x.replace('-', '_')}
+        return {x[0]: f'$CACHE_ROOT/{x[1]}'}
+    
+    Env.CACHES = Environment( 
+        hf = '$CACHE_ROOT/huggingface',
+        mlc = '$CACHE_ROOT/mlc_llm',
+        trt_llm = '$CACHE_ROOT/trt_llm',
+        llama_cpp = '$CACHE_ROOT/llama_cpp',
+        datasets = '$CACHE_ROOT/datasets',
+        benchmarks = '$CACHE_ROOT/benchmarks'
+    )
+
+    Env.CACHE_ROOT = str(Path(
         getenv(
             ['HF_HUB_CACHE', 'TRANSFORMERS_CACHE', 'HF_HOME'], 
             '~/.cache/huggingface'
@@ -108,9 +164,11 @@ def setup_environment():
     ).expanduser().parent)
 
     Env.HF_TOKEN = getenv(['HF_TOKEN', 'HUGGINGFACE_TOKEN'])
+
     Env.HAS_MLC = has_command('mlc_llm')
     Env.HAS_HF_HUB = has_import('huggingface_hub')
     Env.HAS_NVIDIA_SMI = has_command('nvidia-smi')
+    Env.HAS_LLAMA_CPP = has_command('llama-server')
 
     Env.HAS_DOCKER_API=has_import('docker')
     Env.HAS_DOCKER_CLI=has_command('docker')
@@ -145,9 +203,12 @@ class Environment(dict):
         txt = ''
         mse = ' ' * margin + sep
         pad = mse + ' ' * (indent * level)
-
+   
         def pad_row(text):
             return text.ljust(width+1) + sep + '\n'
+        
+        if key == 'CACHES':
+            return ''
 
         if level <= 1:    sym = ''
         elif level == 2:  sym = '* '
@@ -165,16 +226,23 @@ class Environment(dict):
             div = mse + sep * (width-1) + '\n'
             blank = mse.ljust(width+1) + '#\n'
             return ''.join([div,
-                pad_row(f"{mse} GPU Device Configuration "),
+                pad_row(f"{mse} CUDA Device Configuration "),
                 div, blank, txt, blank, div,
             ])
 
+        def format_dict(x):
+            y = ''
+            for z in x:
+                y += self.format(obj=x[z], key=z, sep=sep, column=column, 
+                     width=width, margin=margin, indent=indent, level=level+1)
+            return y
+            
         if isinstance(obj, dict):
             if key:
                 txt += pad_row(f'{pad}{sym}{key}')
-            for x in obj:
-                txt += self.format(obj=obj[x], key=x, sep=sep, column=column, 
-                     width=width, margin=margin, indent=indent, level=level+1)
+            else:
+                txt += format_dict(obj)
+
         elif isinstance(obj, list) and isinstance(obj[0], (dict, list)):
             if len(obj) > 1:
                 if key:
@@ -183,13 +251,201 @@ class Environment(dict):
                     txt += self.format(obj=obj[x], key=x, sep=sep, column=column, 
                              width=width, margin=margin, indent=indent, level=level+1)
             else:
-                txt += pad_row(f'{pad+sym+key}'.ljust(column) + str(obj[0]))  
+                if isinstance(obj[0], list):
+                    txt += pad_row(f'{pad+sym+key}'.ljust(column) + str(obj[0]))  
+                else:
+                    txt += pad_row(f'{pad}{sym}{key}')
+                    txt += format_dict(obj[0])    
         else:
             txt += pad_row(f"{pad+sym+key}".ljust(column) + str(obj))
 
         return txt
 
 ###############################################################
+
+def cudaDeviceQuery():
+    """
+    Get GPU device info by loading/calling libcuda directly.
+    """
+    try:
+        return _cudaDeviceQuery()
+    except Exception as error:
+        logger.warning(f'cudaDeviceQuery() failed:  {error}')
+        raise error
+    
+def _cudaDeviceQuery():
+    """
+    https://gist.github.com/f0k/63a664160d016a491b2cbea15913d549
+    """
+    CUDA_SUCCESS = 0
+
+    CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT = 16
+    CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_MULTIPROCESSOR = 39
+    CU_DEVICE_ATTRIBUTE_CLOCK_RATE = 13
+    CU_DEVICE_ATTRIBUTE_MEMORY_CLOCK_RATE = 36
+
+    cuda = ctypes.CDLL('libcuda.so')
+
+    nGpus = ctypes.c_int()
+    name = b' ' * 100
+    cc_major = ctypes.c_int()
+    cc_minor = ctypes.c_int()
+    cores = ctypes.c_int()
+    threads_per_core = ctypes.c_int()
+    clockrate = ctypes.c_int()
+    freeMem = ctypes.c_size_t()
+    totalMem = ctypes.c_size_t()
+
+    result = ctypes.c_int()
+    device = ctypes.c_int()
+    context = ctypes.c_void_p()
+    error_str = ctypes.c_char_p()
+
+    result = cuda.cuInit(0)
+    output = []
+
+    if result != CUDA_SUCCESS:
+        cuda.cuGetErrorString(result, ctypes.byref(error_str))
+        raise RuntimeError("cuInit failed with error code %d: %s" % (result, error_str.value.decode()))
+        return output
+    result = cuda.cuDeviceGetCount(ctypes.byref(nGpus))
+    if result != CUDA_SUCCESS:
+        cuda.cuGetErrorString(result, ctypes.byref(error_str))
+        raise RuntimeError("cuDeviceGetCount failed with error code %d: %s" % (result, error_str.value.decode()))
+    #logging.info("Found %d CUDA devices" % nGpus.value)
+    for i in range(nGpus.value):
+        result = cuda.cuDeviceGet(ctypes.byref(device), i)
+        if result != CUDA_SUCCESS:
+            cuda.cuGetErrorString(result, ctypes.byref(error_str))
+            raise RuntimeError("cuDeviceGet failed with error code %d: %s" % (result, error_str.value.decode()))
+        info = Environment()
+        if cuda.cuDeviceGetName(ctypes.c_char_p(name), len(name), device) == CUDA_SUCCESS:
+            info.name = name.split(b'\0', 1)[0].decode()
+        if cuda.cuDeviceComputeCapability(ctypes.byref(cc_major), ctypes.byref(cc_minor), device) == CUDA_SUCCESS:
+            cc = (cc_major.value, cc_minor.value)
+            info.family = cudaDeviceFamily(*cc)
+            info.cc = cc
+        if cuda.cuDeviceGetAttribute(ctypes.byref(cores), CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, device) == CUDA_SUCCESS:
+            info.mp = cores.value
+            info.cores = (cores.value * cudaCoresPerSM(cc_major.value, cc_minor.value) or 0)
+            if cuda.cuDeviceGetAttribute(ctypes.byref(threads_per_core), CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_MULTIPROCESSOR, device) == CUDA_SUCCESS:
+                info.threads = (cores.value * threads_per_core.value)
+        #if cuda.cuDeviceGetAttribute(ctypes.byref(clockrate), CU_DEVICE_ATTRIBUTE_CLOCK_RATE, device) == CUDA_SUCCESS:
+        #    info.gpu_clock = clockrate.value / 1000.
+        #if cuda.cuDeviceGetAttribute(ctypes.byref(clockrate), CU_DEVICE_ATTRIBUTE_MEMORY_CLOCK_RATE, device) == CUDA_SUCCESS:
+        #    info.mem_clock = clockrate.value / 1000.
+        try:
+            result = cuda.cuCtxCreate_v2(ctypes.byref(context), 0, device)
+        except AttributeError:
+            result = cuda.cuCtxCreate(ctypes.byref(context), 0, device)
+        if result != CUDA_SUCCESS:
+            cuda.cuGetErrorString(result, ctypes.byref(error_str))
+            raise RuntimeError("cuCtxCreate failed with error code %d: %s" % (result, error_str.value.decode()))
+        else:
+            try:
+                result = cuda.cuMemGetInfo_v2(ctypes.byref(freeMem), ctypes.byref(totalMem))
+            except AttributeError:
+                result = cuda.cuMemGetInfo(ctypes.byref(freeMem), ctypes.byref(totalMem))
+            if result == CUDA_SUCCESS:
+                info.mem_total = int(totalMem.value / 1024**2)
+                info.mem_free = int(freeMem.value / 1024**2)
+            else:
+                cuda.cuGetErrorString(result, ctypes.byref(error_str))
+                raise RuntimeError("cuMemGetInfo failed with error code %d: %s" % (result, error_str.value.decode()))
+            cuda.cuCtxDetach(context)
+        if not info:
+            continue
+        codename = info.name.lower().replace(' ', '-')
+        if info.name and info.mem_total:
+            if info.name.lower() == 'orin':
+                if info.mem_total > 50000:
+                    info.name = 'AGX Orin 64GB'
+                elif info.mem_total > 24000:
+                    info.name = 'AGX Orin 32GB'
+                elif info.mem_total > 12000:
+                    info.name = 'Orin NX 16GB' 
+                elif info.mem_total > 6000:
+                    info.name = 'Orin Nano 8GB'  
+                elif info.mem_total > 2500:
+                    info.name = 'Orin Nano 4GB'
+        output.append(info)
+    return output
+
+def cudaShortName(name):
+    """
+    Get board identifier and name
+    """
+    if name == 'AGX Orin 64GB': return 'agx-orin'
+    elif name == 'AGX Orin 32GB': return 'agx-orin-32gb'
+    elif name == 'Orin NX 16GB': return 'orin-nx'
+    elif name == 'Orin NX 8GB': return 'orin-nx-8gb'
+    elif name == 'Orin Nano 8GB': return 'orin-nano'
+    elif name == 'Orin Nano 4GB': return 'orin-nano-4gb'
+    return name.lower().replace(' ', '-')
+
+def cudaShortVersion(version: str=None):
+    """
+    Return CUDA version tag (like cu126 for CUDA 12.6)
+    """
+    if not version:
+        version = Env.CUDA_VERSION
+    return f"cu{version.replace('.','')}"
+
+def cudaCoresPerSM(major, minor):
+    # Returns the number of CUDA cores per multiprocessor for a given
+    # Compute Capability version. There is no way to retrieve that via
+    # the API, so it needs to be hard-coded.
+    # See _ConvertSMVer2Cores in helper_cuda.h in NVIDIA's CUDA Samples.
+    return {(1, 0): 8,    # Tesla
+            (1, 1): 8,
+            (1, 2): 8,
+            (1, 3): 8,
+            (2, 0): 32,   # Fermi
+            (2, 1): 48,
+            (3, 0): 192,  # Kepler
+            (3, 2): 192,
+            (3, 5): 192,
+            (3, 7): 192,
+            (5, 0): 128,  # Maxwell
+            (5, 2): 128,
+            (5, 3): 128,
+            (6, 0): 64,   # Pascal
+            (6, 1): 128,
+            (6, 2): 128,
+            (7, 0): 64,   # Volta
+            (7, 2): 64,
+            (7, 5): 64,   # Turing
+            (8, 0): 64,   # Ampere
+            (8, 6): 128,
+            (8, 7): 128,
+            (8, 9): 128,  # Ada
+            (9, 0): 128,  # Hopper
+            }.get((major, minor), 0)
+
+def cudaDeviceFamily(major, minor):
+    """
+    Map CUDA compute capability to GPU family names.
+    """
+    if major == 1:      return "Tesla"
+    elif major == 2:    return "Fermi"
+    elif major == 3:    return "Kepler"
+    elif major == 5:    return "Maxwell"
+    elif major == 6:    return "Pascal"
+    elif major == 7:
+        if minor < 5:   return "Volta"
+        else:           return "Turing"
+    elif major == 8: 
+        if minor < 9:   return "Ampere"
+        else:           return "Ada"
+    elif major == 9:    return "Hopper"
+    elif major == 10:   return "Blackwell"
+    else:               return "Unknown"
+
+# this is done here because it forks and upsets the logging
+CUDA_DEVICES=cudaDeviceQuery() 
+
+###############################################################
+import logging
 
 class ColorLog(logging.Formatter):
 
@@ -223,15 +479,15 @@ class ColorLog(logging.Formatter):
     @staticmethod
     def setup(name=__name__):
         level = getattr(logging, getenv('LOG_LEVEL', 'info').upper(), logging.INFO)
-        
         logging.basicConfig(
             stream=sys.stderr, 
             level=level,
             format='%(asctime)s - %(message)s', datefmt="%Y-%m-%d %H:%M:%S"
         )
         logger = logging.getLogger(name)
-        logging.getLogger().removeHandler(logging.getLogger().handlers[0])
-        #logger.handlers.clear()
+        if len(logging.getLogger().handlers) > 0:
+            logging.getLogger().removeHandler(logging.getLogger().handlers[0])
+        logger.handlers.clear()
         ch = logging.StreamHandler()
         ch.setLevel(level)
         ch.setFormatter(ColorLog())
@@ -252,6 +508,8 @@ def shell(cmd, echo=True, capture_output=False, **kwargs):
     if not isinstance(cmd, list):
         cmd = [cmd]
         
+    cmd = [x for x in cmd if x != None and len(x) > 0]
+    
     if echo:
         endline = f' \\\n    {ColorLog.OKGREEN}'
         echo = echo if isinstance(echo, str) else 'Running shell command'
@@ -288,15 +546,6 @@ def has_import(module):
         logger.debug(f"{module} not found ({error})")
         return False
 
-def gpu_device_query():
-    """ 
-    Get GPU device info from nvidia-smi 
-    """
-    try:
-        return xmlToJson(subshell('/usr/sbin/nvidia-smi -q -x', echo='Running nvidia-smi query'))
-    except Exception as error:
-        logger.warning(f'Failed to query GPU devices from nvidia-smi ({error})')
-    
 def getenv(keys, default=None):
     """ 
     Get environment variable from the OS with fallback options.
@@ -311,6 +560,16 @@ def getenv(keys, default=None):
         
     return default
      
+def nvidia_smi_query():
+    """ 
+    Get GPU device info from nvidia-smi 
+    """
+    try:
+        return xmlToJson(subshell('/usr/sbin/nvidia-smi -q -x', echo=False))
+    except Exception as error:
+        logger.warning(f'Failed to query GPU devices from nvidia-smi ({error})')
+    
+
 ###############################################################
 
 class Docker:
@@ -323,21 +582,43 @@ class Docker:
 
     @staticmethod
     def client():
+        import docker
         if not Docker.Client:
             Docker.Client = docker.from_env()
         return Docker.Client
     
     @staticmethod
+    def find(names):
+        if isinstance(names, str):
+            names=[names]
+        try:
+            for c in Docker.client().containers.list():
+                for name in names:
+                    if name in c.name:
+                        return c.name
+            logging.warning(f"Failed to find container by the names {names}")
+        except Exception as error:
+            logging.error(f"Exception trying to find container {names} ({error})")
+
+    @staticmethod
     def stop(name):
         try:
-            Docker.client().containers.get(name).stop()
+            name = Docker.find(name)
+            if name:
+                c = Docker.client().containers.get(name)
+                logging.info(f"Stopping container '{c.name}' ({c.id})")
+                c.stop()
         except Exception as error:
             logging.error(f"Failed to stop container '{name}' ({error})")
             Docker.kill(name)
         
     @staticmethod
     def kill(name):
-        Docker.client().containers.get(name).kill()
+        name = Docker.find(name)
+        if name:
+            c = Docker.client().containers.get(name)
+            logging.info(f"Killing container '{c.name}' ({c.id})")
+            c.kill()
 
 ###############################################################
 
@@ -401,7 +682,7 @@ def xmlToJson(tree, nan=[], blacklist=[], rename={}):
 
 ###############################################################
 
-def download_model(model: str, cache: str=None, api_key: str=None, flatten=False, **kwargs):
+def download_model(model: str, cache: str=None, api_key: str=None, flatten=False, download_kwargs={}, **kwargs):
     """
     Download a model repo or file from HuggingFace Hub
 
@@ -413,15 +694,27 @@ def download_model(model: str, cache: str=None, api_key: str=None, flatten=False
     
     from huggingface_hub import hf_hub_download, snapshot_download
 
+    model = model.replace('hf.co/', '')
+    
+    repo_path = Path(model)
+    repo_path = str(repo_path.parent if repo_path.suffix.lower() == '.gguf' else repo_path)
+
+    if not cache:
+        cache = 'hf'
+        if 'gguf' in model.lower(): cache = 'llama_cpp' 
+        if 'mlc' in model.lower(): cache = 'mlc'
+        for k in Env.CACHES:
+            if k in model:
+                cache = k
+        cache = kwargs.get(f'cache_{cache}')
+
     cache = os.path.join(
-        cache, model.replace('/', '--') 
-        if flatten else model
+        resolve_path(cache), 
+        repo_path.replace('/', '--') if flatten else repo_path
     )
 
-    os.makedirs(cache, mode=0o755, exist_ok=True)
-
-    kwargs.setdefault('resume_download', True)
-    kwargs.setdefault('repo_type', 'model')
+    download_kwargs.setdefault('resume_download', True)
+    download_kwargs.setdefault('repo_type', 'model')
 
     # Handle either "org/repo" or individual "org/repo/file"
     # the former has 0-1 slashes, while the later has 2.
@@ -443,14 +736,23 @@ def download_model(model: str, cache: str=None, api_key: str=None, flatten=False
         repo_id = model[:idx]
         filename = model[idx+1:]
 
-        logger.info(f"Downloading file {filename} from HF Hub - {model}")
-        repo_path = hf_hub_download(repo_id=repo_id, filename=filename, local_dir=cache, token=api_key, **kwargs)
+        logger.info(f"Downloading file {filename} from HF Hub:  {model} -> {cache}")
+        repo_path = hf_hub_download(repo_id=repo_id, filename=filename, local_dir=cache, token=api_key, **download_kwargs)
     else:
-        logger.info(f"Downloading model from HF Hub - {model}")
-        repo_path = snapshot_download(repo_id=model, local_dir=cache, token=api_key, **kwargs)
+        logger.info(f"Downloading model from HF Hub:  {model} -> {cache}")
+        repo_path = snapshot_download(repo_id=model, local_dir=cache, token=api_key, **download_kwargs)
 
-    logger.info(f"Downloaded {model} to:\n    {repo_path}\n")
+    logger.info(f"Downloaded {model} to:  {repo_path}\n")
     return repo_path
+
+def download_dataset(dataset: str=None, cache: str=None, api_key: str=None, **kwargs):
+    """
+    Download a dataset from HF Hub, NGC, TFDS, ect.
+    """
+    return download_model(dataset, api_key=api_key, repo_type='dataset', 
+                          cache=cache if cache else kwargs.get('cache_datasets', 
+                          Env.CACHES['datasets']), download_kwargs={'repo_type': 'dataset'}, 
+                          **kwargs)
 
 def hf_hub_exists(model: str, api_key: str=None, **kwargs):
     """
@@ -469,6 +771,19 @@ def hf_hub_exists(model: str, api_key: str=None, **kwargs):
         return False
     
     return True
+
+def resolve_path(path, makedirs=True):
+    """
+    Perform substitutions and checks to resolve local paths
+    """
+    path = path.replace('$CACHE_ROOT', Env.CACHE_ROOT)
+
+    if makedirs:
+        p = Path(path)
+        p = str(p.parent) if (p.suffix.lower() == '.gguf') else path
+        os.makedirs(p, mode=0o755, exist_ok=True)
+    
+    return path
 
 def get_chat_template(model):
     """
@@ -498,6 +813,9 @@ class MLC:
     """
     @staticmethod
     def deploy(model: str=None, quantization: str=None, **kwargs):
+        if not Env.HAS_MLC:
+            raise RuntimeError(f"Could not find MLC installed in this environment (missing mlc_llm in $PATH)")
+
         model_path = Path(model)
 
         if model_path.is_dir():
@@ -523,25 +841,32 @@ class MLC:
             if len(model_path.parts) != 2:
                 raise ValueError(f"Invalid local path or remote URL, or resource not found ({model_path})")
             
-            model_org, model_name = Path(model).parts
-            is_quant = quantization in model_name and '-mlc' in model_name.lower()
-
-            if not is_quant:
-                quant_model = f'{model_name}-{quantization}-MLC'
-                quant_hosts = ['dusty-nv', 'mlc-ai']
-                for quant_host in quant_hosts:
-                    quant_repo = os.path.join(quant_host, quant_model)
-                    if hf_hub_exists(quant_repo, **kwargs):
-                        return MLC.deploy(quant_repo, quantization=quantization, **kwargs)
-                    
-            if not hf_hub_exists(model, **kwargs):
-                raise IOError(f"could not locate or access model {model}")
-            
-            cache_key = 'cache_mlc' if is_quant else 'cache_hf'
-            model_path = download_model(model, cache=kwargs.get(cache_key), api_key=kwargs.get('api_key'))
+            model_path = MLC.download(model=model, quantization=quantization, **kwargs)
             return MLC.deploy(model=model_path, quantization=quantization, **kwargs)
 
         return MLC.serve(model_lib, quantization=quantization, **kwargs)
+
+    @staticmethod
+    def download(model: str, quantization: str=None, **kwargs):
+        model_org, model_name = Path(model).parts
+        is_quant = quantization in model_name and '-mlc' in model_name.lower()
+
+        if not is_quant:
+            quant_model = f'{model_name}-{quantization}-MLC'
+            quant_hosts = ['dusty-nv', 'mlc-ai']
+            for quant_host in quant_hosts:
+                quant_repo = os.path.join(quant_host, quant_model)
+                if hf_hub_exists(quant_repo, **kwargs):
+                    model, is_quant = quant_repo, True
+                    break
+
+        if not is_quant and not hf_hub_exists(model, **kwargs):
+            raise IOError(f"could not locate or access model {model}")
+        
+        return download_model(model, 
+            cache=kwargs.get('cache_mlc' if is_quant else 'cache_hf'),
+            **kwargs
+        )
 
     @staticmethod
     def quantize(model_path : str, quantization: str=None, cache_mlc: str=None, **kwargs):
@@ -553,7 +878,7 @@ class MLC:
         ]
         shell(cmd, echo='Running MLC quantization')
         return quant_path
-    
+
     @staticmethod
     def config(model_path : str, quant_path : str, quantization: str=None, **kwargs):
         kwargs.setdefault('chat_template', get_chat_template(model_path))
@@ -575,13 +900,13 @@ class MLC:
     @staticmethod
     def serve(model_lib : str, quantization: str=None, host: str='0.0.0.0', port: int=9000, max_batch_size: int=1, cache_mlc: str=None, **kwargs):
         model_lib = Path(model_lib)
-        model_lib = model_lib.relative_to(cache_mlc)
+        model_lib = model_lib.relative_to(resolve_path(cache_mlc))
         mode = 'local' if max_batch_size > 1 else 'interactive'
         cmd = [f"mlc_llm serve --mode {mode} --device cuda",
                f"--host {host} --port {port}"]
         cmd += MLC.overrides(exclude=['max_batch_size'], **kwargs)
         cmd += [f"--model-lib {model_lib}", f"{model_lib.parent}"]
-        return shell(cmd, cwd=cache_mlc, echo='Loading model')
+        return shell(cmd, cwd=resolve_path(cache_mlc), echo='Loading model')
 
     @staticmethod
     def overrides(packed=True, exclude=[], **kwargs):
@@ -617,59 +942,163 @@ class MLC:
 
 ###############################################################
 
+class LlamaCpp:
+    """
+    llama.cpp deployment (GGUF)
+     https://github.com/ggerganov/llama.cpp/blob/master/examples/server/README.md#openai-compatible-api-endpoints
+    """
+    @staticmethod
+    def deploy(model: str=None, quantization: str=None, 
+               max_context_len: int=None, prefill_chunk: int=None, 
+               chat_template: str=None,
+               host: str='0.0.0.0', port: int=9000,
+               log_level: str='info', **kwargs):
+        
+        if not Env.HAS_LLAMA_CPP:
+            raise RuntimeError(f"Could not find llama.cpp installed in this environment (missing llama-server in $PATH)")
+
+        model_path = Path(model)
+
+        if model_path.suffix.lower() != '.gguf': # TODO hf->conversion
+            raise ValueError(f"Expected a file with .gguf extension for --api=llama_cpp")
+        
+        if not model_path.is_file():
+            model_path = Path(LlamaCpp.download(model, quantization=quantization, **kwargs))
+
+        cmd = [
+            f'llama-server',
+            f'--model {model_path}',
+            f'--alias {model_path.name}',
+            f'--flash-attn',
+            f'--n-gpu-layers 999',
+            f'--ctx-size {max_context_len}' if max_context_len else '',
+            f'--batch-size {prefill_chunk}' if prefill_chunk else '',
+            f'--chat-template {chat_template}' if chat_template else '',
+            f'--host {host} --port {port}',
+            '--verbose' if log_level == 'debug' else ''
+        ]
+
+        shell(cmd, echo='Running llama.cpp server')
+        return model_path
+
+    @staticmethod
+    def download(model: str, quantization: str=None, **kwargs):
+        is_quant = (Path(model).suffix.lower() == '.gguf')
+
+        if not is_quant:
+            quant_model = f'{Path(model).name}-GGUF'
+            quant_hosts = ['bartowski', 'dusty-nv']
+            for quant_host in quant_hosts:
+                quant_repo = os.path.join(quant_host, quant_model)
+                if hf_hub_exists(quant_repo, **kwargs):
+                    model = os.path.join(quant_repo, quantization.upper() + '.gguf')
+                    is_quant = True
+                    break
+
+        if not is_quant and not hf_hub_exists(model, **kwargs):
+            raise IOError(f"could not locate or access model {model}")
+        
+        return download_model(model, 
+            cache=kwargs.get('cache_llama_cpp' if is_quant else 'cache_hf'),
+            **kwargs
+        )
+    
+###############################################################
+
+def run_server( model: str=None, api: str=None, quantization: str=None, **kwargs ):
+    """
+    Launch model endpoint servers for the different APIs.
+    """
+    if not model:
+        raise ValueError(f"Missing required argument:  --model")
+
+    if api == 'mlc':
+        MLC.deploy(model=model, quantization=quantization, **kwargs)
+    elif api == 'llama_cpp':
+        LlamaCpp.deploy(model=model, quantization=quantization, **kwargs)
+    else:
+        raise RuntimeError(f"Unsupported configuration or model selected")
+    
+def run_benchmark( model: str=None, dataset: str=None, tokenizer: str=None, host: str=None, port: int=None, **kwargs ):
+    """
+    Launch endpoint benchmark client (assumes server is already running)
+    """
+    if not Env.HAS_MLC:
+        raise RuntimeError(f"The benchmark client is installed in MLC, and could not find MLC installed in this environment (missing mlc_llm in $PATH)")
+
+    if not model:
+        raise ValueError(f"Missing required argument:  --model")
+     
+    if not dataset:
+        dataset = 'anon8231489123/ShareGPT_Vicuna_unfiltered/ShareGPT_V3_unfiltered_cleaned_split.json'
+
+    dataset_path = download_dataset(dataset, **kwargs)
+
+    tokenizer_path = download_model(tokenizer if tokenizer else model, 
+                                    download_kwargs={} if tokenizer else {'local_files_only': True}, 
+                                    **kwargs) 
+
+    output_path = resolve_path(kwargs.get('cache_benchmarks'))
+    output_file = os.path.join(output_path, str(Path(model).name).replace('.', '_').lower() + f'_{Env.BOARD_ID}_{cudaShortVersion()}')
+
+    with open(output_file + '.json', 'w') as file:
+        json.dump(Env, file, indent=2)
+
+    cmd = ['python3 -m mlc_llm.bench']
+
+    cmd += [f'--dataset sharegpt']
+    cmd += [f'--dataset-path {dataset_path}']
+    cmd += [f'--tokenizer {tokenizer_path}']
+    cmd += [f'--api-endpoint openai']
+    cmd += [f'--num-requests 25']
+    cmd += [f'--num-warmup-requests 3']
+    cmd += [f'--num-concurrent-requests 2']
+    cmd += [f'--num-gpus {Env.NUM_GPU}']
+    cmd += [f'--host {host}']
+    cmd += [f'--port {port}']
+    cmd += [f'--output {output_file}.csv']
+
+    shell(cmd, echo='Running benchmark client')
+
+def run_command( cmd, **kwargs ):
+    """
+    Invoke different commands like 'download', 'serve', 'bench'
+    """
+    kwargs['api'] = find_quantization_api(**kwargs)
+
+    if cmd == 'download':
+        if args.dataset:
+            location = download_dataset(args.dataset, **kwargs)
+        elif args.model:
+            location = download_model(args.model, **kwargs)
+        logger.info(f"Downloaded {repo_type} {asset} to {location}")
+    elif cmd == 'bench':
+        run_benchmark(**kwargs)
+    elif cmd == 'serve':
+        run_server(**kwargs)
+    elif cmd == 'stop':
+        Docker.stop('llm_server')
+    else:
+        raise ValueError(f"Unrecognized command: '{cmd}'")
+        
+###############################################################
+
 if __name__ == "__main__":
 
     logger = ColorLog.setup()
     Env = setup_environment()
-    args = cli_arguments().parse_args()
+    args = cli_arguments()
 
-    if args.verbose:
-        args.log_level = 'debug'
+    header = ColorLog.OKGREEN + Env.format() + ColorLog.reset \
+             if args.commands[0] != 'bench' else ''
 
-    if args.log_level:
-        logger.getLogger(__name__).setLevel(
-            getattr(logging, args.log_level.upper(), logging.INFO)
-        )
-
-    if not args.cache_hf:
-        args.cache_hf = os.path.join(args.cache, 'huggingface')
-    if not args.cache_mlc:
-        args.cache_mlc = os.path.join(args.cache, 'mlc_llm')
-    if not args.cache_trt:
-        args.cache_trt = os.path.join(args.cache, 'trt_llm')
-
-    if not args.model and not args.dataset and not args.version:
-        raise ValueError(f"Missing required argument:  --model or --dataset")
-    
-    if len(args.command) == 1:
-        args.command = args.command[0]
-
-    if args.command == 'download':
-        asset, repo_type = (args.dataset, 'dataset') if args.dataset else (args.model, 'model')
-        location = download_model(
-            asset, cache=args.cache_hf, 
-            api_key=args.api_key, repo_type=repo_type
-        )
-        logger.info(f"Downloaded {repo_type} {asset} to {location}")
-        sys.exit()
-
-    logger.info(args)
-    logger.info(f'sudonim version {__version__}\n\n{ColorLog.OKGREEN + Env.format() + ColorLog.reset}\n')
+    logger.info(f'{args}\n')
+    logger.info(f'sudonim version {__version__}\n\n{header}\n')
 
     if args.version:
         sys.exit()
 
-    if Env.HAS_MLC and args.api == 'mlc':
-        MLC.deploy(**vars(args))
-    else:
-        raise RuntimeError(f"Unsupported configuration or model selected")
-    
-    '''
-    elif HAS_TRT_LLM and args.api == 'trt_llm':
-        TRT_LLM(args)
-    elif HAS_TRANSFORMERS and args.api == 'hf':
-        HF(args)
-    else:
-        run_container(args)
-    '''
-    
+    for cmd in args.commands:
+        run_command(cmd, **vars(args))
+
+###############################################################
