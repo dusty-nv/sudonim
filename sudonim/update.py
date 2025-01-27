@@ -19,14 +19,14 @@ def auto_update(enabled=SUDONIM_UPDATE, run_module='sudonim', **kwargs):
     enabled = str(enabled).lower()
     if enabled in ['true', 'on' 'yes', '1', 'always', 'auto']:
         try:
-            cmd = 'git pull'
+            cmd = 'git pull && pip3 install --upgrade-strategy only-if-needed -e .'
             cwd = Path(__file__).parents[1]
-            cprint(f"\nRunning auto update command '{cmd}' in {cwd}\n", attrs=['dark'])
+            cprint(f"\nRunning auto update command in {cwd}\n  {cmd}", attrs=['dark'])
             result = subprocess.run(
                 cmd, cwd=cwd, executable='/bin/bash', shell=True, check=True, 
             )
         except Exception as error:
-            cprint(f"\n{error} (ignoring failed update)\n", attrs=['dark'])
+            cprint(f"\n{error}\n", attrs=['dark'])
 
     if run_module:
         runpy.run_module('sudonim', run_name='__main__')
