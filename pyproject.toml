@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sudonim"
+version = "0.1.1"
+authors = [{name="Dustin Franklin", email="dustinf@nvidia.com" }]
+description = "Local AI microservice launcher"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+  "docker",
+  "termcolor",
+  "tabulate",
+  "huggingface_hub"
+]
+
+[project.scripts]
+sudonim = "sudonim.update:auto_update"
+
+[project.urls]
+"Homepage" = "https://github.com/dusty-nv/sudonim"
+"Bug Tracker" = "https://github.com/dusty-nv/sudonim/issues"
