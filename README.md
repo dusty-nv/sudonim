@@ -14,5 +14,12 @@ Local AI microservice launcher and docker-compose generator for deploying contai
 Manual installation isn't typically necessary at this point in time, as normally [`sudonim`](/sudonim) is invoked from docker and already setup inside relevant container images. In jetson-containers it gets installed like this:
 
 ```bash
+git clone https://github.com/dusty-nv/sudonim /opt/sudonim
+pip install -e /opt/sudonim
+```
+
+That is so the sources are retained and mountable in a known location for development purposes.  Otherwise you can use the one-liner:
+
+```bash
 pip install git+https://github.com/dusty-nv/sudonim
 ```

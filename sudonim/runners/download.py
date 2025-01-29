@@ -3,7 +3,7 @@ from sudonim import download_model, download_dataset
 
 def download_repo(model: str=None, dataset: str=None, **kwargs ):
     """
-    Invoke different commands like 'download', 'serve', 'bench'
+    Download a model, dataset, or repo from HF Hub, GitHub, NGC, ect.
     """
     if dataset:
         location = download_dataset(dataset, **kwargs)

@@ -1,8 +1,7 @@
 import ctypes
+import sudonim as nim
 
-from sudonim import NamedDict, subshell, getLogger, xmlToJson
-
-log = getLogger()
+log = nim.getLogger()
 
 def cudaDeviceQuery():
     """
@@ -59,7 +58,7 @@ def _cudaDeviceQuery():
         if result != CUDA_SUCCESS:
             cuda.cuGetErrorString(result, ctypes.byref(error_str))
             raise RuntimeError("cuDeviceGet failed with error code %d: %s" % (result, error_str.value.decode()))
-        info = NamedDict()
+        info = nim.NamedDict()
         if cuda.cuDeviceGetName(ctypes.c_char_p(name), len(name), device) == CUDA_SUCCESS:
             info.name = name.split(b'\0', 1)[0].decode()
         if cuda.cuDeviceComputeCapability(ctypes.byref(cc_major), ctypes.byref(cc_minor), device) == CUDA_SUCCESS:
@@ -132,7 +131,7 @@ def cudaShortVersion(version: str=None):
     Return CUDA version tag (like cu126 for CUDA 12.6)
     """
     if not version:
-        version = Env.CUDA_VERSION
+        version = nim.getenv('CUDA_VERSION')
     return f"cu{version.replace('.','')}"
 
 def cudaCoresPerSM(major, minor):
@@ -190,6 +189,7 @@ def nvidia_smi_query():
     Get GPU device info from nvidia-smi 
     """
     try:
-        return xmlToJson(subshell('/usr/sbin/nvidia-smi -q -x', echo=False))
+        return nim.xmlToJson(nim.subshell('/usr/sbin/nvidia-smi -q -x', echo=False, dry_run=False))
     except Exception as error:
         log.warning(f'Failed to query GPU devices from nvidia-smi ({error})')
+        return {}

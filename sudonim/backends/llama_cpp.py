@@ -58,7 +58,7 @@ class LlamaCpp:
                     is_quant = True
                     break
 
-        if not is_quant and not hf_hub_exists(model, **kwargs):
+        if not is_quant and not hf_hub_exists(model, warn=True, **kwargs):
             raise IOError(f"could not locate or access model {model}")
         
         return download_model(model, 

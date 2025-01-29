@@ -3,18 +3,34 @@ import tabulate
 
 tabulate.PRESERVE_WHITESPACE = True
 
-def format_table(rows, header=None, footer=None, filter=(), color='green', 
-                 min_widths=[], max_widths=[30,55], attrs=None):
+def property_table( rows, header=None, footer=None, 
+                    filter=(), color='green', 
+                    min_widths=[], max_widths=[30,55], 
+                    wrap_rows=None, merge_columns=False,
+                    attrs=None, **kwargs ):
     """
-    Print a table from a list[list] of rows/columns, or a 2-column dict 
-    where the keys are column 1, and the values are column 2.
+    Print a key-based table from a list[list] of rows/columns, or a 2-column dict 
+    where the keys are column 1, and the values are column 2.  These can be wrapped
+    and merged, or recursively nested like a tree of dicts.
     
     Header is a list of columns or rows that are inserted at the top.
     Footer is a list of columns or rows that are added to the end.
     
-    color names and style attributes are from termcolor library:
+    This uses tabulate for layout, and the kwargs are passed to it:
+      https://github.com/astanin/python-tabulate
+
+    Color names and text attributes are from termcolor library:
       https://github.com/termcolor/termcolor#text-properties
     """
+    if min_widths is None:
+        min_widths = []
+
+    if max_widths is None:
+        max_widths = []
+
+    kwargs.setdefault('numalign', 'center')         # set alignment kwargs to 'left', 'right', 'center'
+    kwargs.setdefault('tablefmt', 'simple_outline') # set 'tablefmt' kwarg to change style
+
     if isinstance(rows, dict):
         rows = flatten_rows(rows, filter=filter)
 
@@ -22,7 +38,7 @@ def format_table(rows, header=None, footer=None, filter=(), color='green',
         for c, col in enumerate(row):
             col = str(col)
             if c < len(min_widths) and len(col) < min_widths[c]:
-                col = col + ' ' * (min_widths[c] - len(col))
+                col = format_str(col, min_widths[c], pad=True)
             if c < len(max_widths) and len(col) > max_widths[c]:
                 col = col[:max_widths[c]]
             row[c] = col
@@ -36,8 +52,38 @@ def format_table(rows, header=None, footer=None, filter=(), color='green',
         if not isinstance(footer[0], list):
             footer = [footer]
         rows = rows + footer
-        
-    table = tabulate.tabulate(rows, tablefmt='rounded_outline', numalign='center')
+
+    if wrap_rows and len(rows) > wrap_rows:
+        for i in range(wrap_rows, len(rows)):
+            rows[i % wrap_rows].extend(rows[i])
+        rows = rows[:wrap_rows]
+
+    if merge_columns:
+        if merge_columns == True:
+            merge_columns = 2
+        new_columns = int(len(rows[0]) / merge_columns)
+        min_widths = [0] * new_columns
+        for r, row in enumerate(rows):
+            for nc in range(new_columns):
+                if nc*merge_columns < len(row):
+                    min_widths[nc] = max(min_widths[nc], len(row[nc*merge_columns]))
+        for r, row in enumerate(rows):
+            new_row = []
+            for nc in range(new_columns):
+                if nc*merge_columns >= len(row):
+                    continue
+
+                new_col = format_str(
+                    row[nc*merge_columns], 
+                    length=min_widths[nc], 
+                    pad=True
+                )
+                for x in range(1,merge_columns):
+                    new_col += '  ' + row[nc*merge_columns+x]
+                new_row.append(new_col)
+            rows[r] = new_row
+
+    table = tabulate.tabulate(rows, **kwargs)
 
     if not color:
         return table
@@ -55,7 +101,11 @@ def flatten_rows(seq, filter=()):
     def flatten(seq, indent='', prefix='', out=[]):
         iter = range(len(seq)) if isinstance(seq,(list,tuple)) else seq
         for key in iter:
-            val = filter(seq,key) if filter else seq[key]
+            val = seq[key]
+            if filter:
+                val = filter(seq,key,val) 
+                if isinstance(val, tuple) and len(val) == 2:
+                    key, val = val
             if not val:
                 continue
             if isinstance(seq,dict) and isinstance(val,list):
@@ -67,3 +117,36 @@ def flatten_rows(seq, filter=()):
                 out.append([indent + prefix + str(key), val])
         return out
     return flatten(seq)      
+
+def wrap_rows(rows, max_rows=0):
+    """
+    Distribute the rows evenly across multiple columns until all are filled.
+    """
+    if not max_rows:
+        return rows
+    
+    if len(rows) < max_rows:
+        return rows
+
+    for i in range(max_rows, len(rows)):
+        rows[i % max_rows].extend(rows[i])
+
+    return rows[:max_rows]
+
+def format_str(text, length=None, pad=None):
+    """
+    Either pad or truncate a string to get it to the desired length
+    """
+    if not text or not length:
+        return text
+
+    if pad == True:
+        pad = ' '
+
+    if pad and len(text) < length:
+        return text + pad * (length - len(text))
+                             
+    if len(text) > length:
+        return text[:length]
+    
+    return text

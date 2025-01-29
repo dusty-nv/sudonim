@@ -4,12 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sudonim"
-version = "0.1.1"
+version = "0.1.2"
 authors = [{name="Dustin Franklin", email="dustinf@nvidia.com" }]
 description = "Local AI microservice launcher"
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
+  "psutil",
   "docker",
   "termcolor",
   "tabulate",

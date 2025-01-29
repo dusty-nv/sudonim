@@ -10,10 +10,10 @@ except Exception as error:
 from .env import *
 
 from .utils.log import *
-from .utils.table import *
-from .utils.shell import *
 from .utils.misc import *
+from .utils.table import *
 from .utils.cuda import *
+from .utils.shell import *
 from .utils.hub import *
 from .utils.docker import *
 

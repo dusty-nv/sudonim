@@ -16,8 +16,12 @@ SUDONIM_REPO = os.environ.get(
 )
 
 def auto_update(enabled=SUDONIM_UPDATE, run_module='sudonim', **kwargs):
+    """
+    Pull / install the latest version from github when DOCKER_PULL or SUDONIM_UPDATE is set.
+    This is 'sudonim' shell script entrypoint and is able to reload the module after updates.
+    """
     enabled = str(enabled).lower()
-    if enabled in ['true', 'on' 'yes', '1', 'always', 'auto']:
+    if enabled in ['1', 'true', 'on', 'yes', 'y', 'enable', 'enabled', 'always', 'auto']:
         try:
             cmd = 'git pull && pip3 install --upgrade-strategy only-if-needed -e .'
             cwd = Path(__file__).parents[1]

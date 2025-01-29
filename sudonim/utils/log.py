@@ -4,15 +4,17 @@ import termcolor
 import sudonim
 
 # add custom logging.SUCCESS level and logging.success() function
-logging.SUCCESS = 35 # https://docs.python.org/3/library/logging.html#logging-levels
+#logging.STATUS = 25  # https://docs.python.org/3/library/logging.html#logging-levels
+logging.SUCCESS = 35 
 
 # default message formats and color highlighting
-DEFAULT_FORMAT='%(asctime)s - %(message)s' #'%(asctime)s | %(levelname)s | %(message)s'
+DEFAULT_FORMAT='[%(asctime)s] sudonim | %(message)s' #'%(asctime)s | %(levelname)s | %(message)s'
 DEFAULT_DATEFMT='%H:%M:%S'
 
 DEFAULT_COLORS = {
     logging.DEBUG: ('light_grey', 'dark'),
-    logging.INFO: None,
+    logging.INFO: (None, 'dark'),
+    #logging.STATUS: (None, 'dark'),
     logging.WARNING: 'yellow',
     logging.SUCCESS: 'green',
     logging.ERROR: 'red',
@@ -68,8 +70,13 @@ def basicConfig(level='info', format=DEFAULT_FORMAT, datefmt=DEFAULT_DATEFMT, co
                         
         kwargs (dict) -- Additional arguments passed to logging.basicConfig() (https://docs.python.org/3/library/logging.html#logging.basicConfig)
     """
+    #logging.addLevelName(logging.STATUS, 'STATUS')
     logging.addLevelName(logging.SUCCESS, 'SUCCESS')
+
     logging.success = logSuccess
+    
+    if not level:
+        level = 'info'
 
     if isinstance(level, str):
         level = getattr(logging, level.upper(), logging.INFO)
@@ -81,7 +88,7 @@ def basicConfig(level='info', format=DEFAULT_FORMAT, datefmt=DEFAULT_DATEFMT, co
     #if len(logging.getLogger().handlers) > 0:
     #    logging.getLogger().removeHandler(logging.getLogger().handlers[0])
     #logger.handlers.clear()
-    #logger.getLogger(__name__).setLevel(getattr(logging, args.log_level.upper(), logging.INFO))
+    #logging.getLogger(__name__).setLevel(level)
     
     logging.basicConfig(handlers=[log_handler], level=level, force=True, **kwargs)
 
@@ -92,9 +99,14 @@ def getLogger(name=__name__):
     logger = logging.getLogger(name=name)
 
     logger.basicConfig = basicConfig
+
+    #logger.status = functools.partial(logStatus, logger=logger)
     logger.success = functools.partial(logSuccess, logger=logger)
 
     return logger
+
+#def logStatus(*args, **kwargs):
+#    kwargs.pop('logger', logging).log(logging.STATUS, *args, **kwargs)
 
 def logSuccess(*args, **kwargs):
     kwargs.pop('logger', logging).log(logging.SUCCESS, *args, **kwargs)
