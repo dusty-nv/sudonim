@@ -140,8 +140,9 @@ def filter_env(env, key, value, blacklist=[]):
         
     if key == 'mem_free':
         return f"[{env.mem_free/1000.0:.1f} / {env.mem_total/1000.0:.1f} GB]"
-    if key == 'HF_TOKEN':
-        return f"{env.HF_TOKEN[0:3]}*********"
+    
+    if key == 'HF_TOKEN' and value:
+        return f"{value[0:3]}*********"  # redact API key
     
     return value
 
