@@ -21,7 +21,7 @@ class ArgParser(argparse.ArgumentParser):
         
         super().__init__(**kwargs)
         
-        self.add_argument('commands', type=str, choices=RUNNERS, nargs='*', default='serve', help="Run a sequence of these commands for downloading and serving models")
+        self.add_argument('commands', type=str, choices=RUNNERS.keys(), nargs='*', default='serve', help="Run a sequence of these commands for downloading and serving models")
 
         grp = self.add_argument_group('API', description="Selects which API to use and sets login credentials & authentication tokens for registry access")
 

@@ -1,4 +1,5 @@
 import os
+import copy
 import xml.etree.ElementTree as ET
 
 from sudonim import getLogger
@@ -63,6 +64,21 @@ def xmlToJson(tree, nan=[], blacklist=[], rename={}):
                 response[child.tag] = text
 
     return response
+
+def merge_dicts(src, dst, recursive=True, replace=True):
+    """
+    Recursively merge the source dictionary into the destination.
+    """
+    for key, value in src.items():
+        if isinstance(value, dict):
+            node = dst.setdefault(key, {})
+            if recursive:
+                merge_dicts(value, node)
+        else:
+            if not replace or key not in dst:
+                dst[key] = copy.deepcopy(value)
+
+    return dst
 
 class NamedDict(dict):
     """

@@ -110,6 +110,7 @@ def _cudaDeviceQuery():
                 elif info.mem_total > 2500:
                     info.name = 'Orin Nano 4GB'
 
+        info.name = info.name.replace('NVIDIA', '').replace('Generation', '').strip()
         output.append(info)
         
     return output
@@ -124,6 +125,7 @@ def cudaShortName(name):
     elif name == 'Orin NX 8GB': return 'orin-nx-8gb'
     elif name == 'Orin Nano 8GB': return 'orin-nano'
     elif name == 'Orin Nano 4GB': return 'orin-nano-4gb'
+
     return name.lower().replace(' ', '-')
 
 def cudaShortVersion(version: str=None):
@@ -189,7 +191,7 @@ def nvidia_smi_query():
     Get GPU device info from nvidia-smi 
     """
     try:
-        return nim.xmlToJson(nim.subshell('/usr/sbin/nvidia-smi -q -x', echo=False, dry_run=False))
+        return nim.xmlToJson(nim.subshell('nvidia-smi -q -x', echo=False, dry_run=False))
     except Exception as error:
         log.warning(f'Failed to query GPU devices from nvidia-smi ({error})')
         return {}

@@ -16,8 +16,8 @@ class MLC:
     MLC/TVM deployment wrapper that automates. the steps to run a model in MLC.
     """
     Quantizations = [
-        'q4f16_0', 'q4f16_1', 'q4f32_1', 'q4f16_2', 'q4f16_autoawq', 'q4f16_ft',
-        'e5m2_e5m2_f16', 'e4m3_e4m3_f16', 'e4m3_e4m3_f16_max_calibrate',
+        'q4f16_0', 'q4f16_1', 'q4f32_1', 'q4f16_2', 'q4f16_ft', # 'q4f16_autoawq', 
+        'e5m2_e5m2_f16', 'e4m3_e4m3_f16', #'e4m3_e4m3_f16_max_calibrate',
     ]
     
     @staticmethod

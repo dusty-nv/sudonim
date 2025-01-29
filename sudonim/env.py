@@ -63,7 +63,8 @@ def global_env(key=None, default=None):
         trt_llm = '$CACHE_ROOT/trt_llm',
         llama_cpp = '$CACHE_ROOT/llama_cpp',
         datasets = '$CACHE_ROOT/datasets',
-        benchmarks = '$CACHE_ROOT/benchmarks'
+        benchmarks = '$CACHE_ROOT/benchmarks',
+        export = None,
     )
 
     env.HF_TOKEN = default_env(['HF_TOKEN', 'HUGGINGFACE_TOKEN'])
@@ -143,6 +144,13 @@ def filter_env(env, key, value, blacklist=[]):
     
     if key == 'HF_TOKEN' and value:
         return f"{value[0:3]}*********"  # redact API key
+    
+    if isinstance(key, int):
+        max_gpus_shown=2
+        if key > max_gpus_shown:
+            return
+        elif len(env) > 1:
+            return f"{key}/{len(env)}", value
     
     return value
 
