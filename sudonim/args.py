@@ -58,13 +58,17 @@ class ArgParser(argparse.ArgumentParser):
 
         grp.add_argument('--cache-mode', type=str, nargs='*', default=env.CACHE_MODE, help="Select which model builder stages the cache is enabled for. By default, quantization and engine building is skipped if those files are found in the local cache.  These flags can be used to retrigger building of those stages that are omitted.  This can also be controlled with the $CACHE_MODE environment variable.")
         
+        grp = self.add_argument_group('DAEMON', description="Management of sudonim background services and auto-updater")
+            
+        grp.add_argument('--dry-run', action='store_true', help="Dry run mode - do not actually execute the commands. This sets $DRY_RUN=true")
+        grp.add_argument('--update', action='store_true', help="Update sudonim to the latest version (use 'docker pull' on containers)")
+
         grp = self.add_argument_group('LOGGING', description="Controls logging settings and verbosity levels")
                                          
         grp.add_argument('--version', action='store_true', help='Print system/environment info')
         grp.add_argument('--debug', '--verbose', action='store_true', help="Set the logging level to 'debug'")
         grp.add_argument('--log-level', default='info', type=str, choices=['debug', 'info', 'warning', 'error', 'critical'], help="Set the logging level")
-        grp.add_argument('--dry-run', action='store_true', help="Dry run mode - do not actually execute the commands. This sets $DRY_RUN=true")
-
+        
     def parse_args(self, **kwargs):
         """
         Override for parse_args() that does some additional configuration

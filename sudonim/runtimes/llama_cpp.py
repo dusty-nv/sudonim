@@ -5,7 +5,7 @@ from pathlib import Path
 from sudonim import (
   download_model, hf_hub_exists, 
   model_has_file, split_model_name,
-  shell, getenv
+  get_model_url, shell, getenv
 )
 
 env, log = getenv()

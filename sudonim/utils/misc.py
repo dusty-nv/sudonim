@@ -102,6 +102,8 @@ class NamedDict(dict):
         dict.__init__(self, *args, **kwargs)
 
     def __getattr__(self, key):
+        if key and key.startswith('__'):
+            return super().__getattr__(key)
         return self[key]
 
     def __setattr__(self, key, value):

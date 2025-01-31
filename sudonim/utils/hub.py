@@ -58,6 +58,18 @@ def get_model_repo(path):
     user, model = split_model_name(path)
     return f'{user}/{model}' if user else model
 
+def get_model_url(repo, domain='hf.co'):
+    """
+    Convert model repo/id to URL (prepended with the given domain)
+    """
+    if not repo:
+        return
+    
+    if repo.startswith(domain):
+        return repo
+    
+    return f'{domain}/{repo}'
+
 def get_model_files(model: str, **kwargs):
     """
     Retrieve the list of files included in the model before it's been downloaded.

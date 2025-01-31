@@ -6,7 +6,7 @@ from pathlib import Path
 from sudonim import (
   download_model, hf_hub_exists, push_to_hub, 
   resolve_path, valid_model_repo, split_model_name,
-  shell, getenv, cudaShortVersion, NamedDict
+  get_model_url, shell, getenv, cudaShortVersion, NamedDict
 )
 
 env, log = getenv()
@@ -64,7 +64,7 @@ class MLC:
             quant_repo = os.path.join(quant_host, quant_model)
             if hf_hub_exists(quant_repo, **kwargs):
                 return quant_repo
-
+    
     @staticmethod
     def download(model: str, quantization: str=None, cache_mode=env.CACHE_MODE, **kwargs):
         if not valid_model_repo(model):
