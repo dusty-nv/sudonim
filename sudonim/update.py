@@ -1,4 +1,5 @@
 import os
+import sys
 import runpy
 import subprocess
 
@@ -24,6 +25,7 @@ def auto_update(enabled=SUDONIM_UPDATE, run_module='sudonim', **kwargs):
     after the module has loaded, and the updates will take effect the next time it runs.
     """
     enabled = str(enabled).lower()
+    
     if enabled in ['1', 'true', 'on', 'yes', 'y', 'enable', 'enabled', 'always', 'auto']:
         try:
             cmd = 'git pull && pip3 install --upgrade-strategy only-if-needed -e .'
@@ -38,5 +40,8 @@ def auto_update(enabled=SUDONIM_UPDATE, run_module='sudonim', **kwargs):
     if run_module:
         runpy.run_module('sudonim', run_name='__main__')
 
+def cli_flag(key, default=False):
+    return True if key in sys.argv else default
+
 def entrypoint():
-    auto_update()
+    auto_update(enabled=cli_flag('--update') or SUDONIM_UPDATE)
