@@ -26,7 +26,7 @@ def run_benchmark( model: str=None, dataset: str=None, tokenizer: str=None, host
                                     **kwargs) 
 
     output_path = resolve_path(kwargs.get('cache_benchmarks'))
-    output_file = os.path.join(output_path, str(Path(model).name).replace('.', '_').lower() + f'_{env.BOARD_ID}_{cudaShortVersion()}')
+    output_file = os.path.join(output_path, str(Path(model).name).replace('.', '_').lower() + f'_{env.get('SYSTEM_ID', 'UNKNOWN_SYSTEM')}_{cudaShortVersion()}')
 
     with open(output_file + '.json', 'w') as file:
         json.dump(env, file, indent=2)
