@@ -1,4 +1,5 @@
 import os
+import pprint
 
 from pathlib import Path
 
@@ -22,6 +23,14 @@ class LlamaCpp:
         'url': 'https://github.com/ggerganov/llama.cpp',
     }
 
+    ChatTemplates = [
+        'chatglm3', 'chatglm4', 'chatml', 'command-r', 'deepseek', 'deepseek2', 'deepseek3',
+        'exaone3', 'falcon3', 'gemma', 'gigachat', 'granite', 'llama2', 'llama2-sys',
+        'llama2-sys-bos', 'llama2-sys-strip', 'llama3', 'megrez', 'minicpm', 'mistral-v1',
+        'mistral-v3', 'mistral-v3-tekken', 'mistral-v7', 'monarch', 'openchat', 'orion',
+        'phi3', 'rwkv-world', 'vicuna', 'vicuna-orca', 'zephyr'
+    ]
+
     @staticmethod
     def deploy(model: str=None, quantization: str=None, 
                 max_context_len: int=None, prefill_chunk: int=None, 
@@ -39,6 +48,11 @@ class LlamaCpp:
         
         if not model_path.is_file():
             model_path = Path(LlamaCpp.download(model, quantization=quantization, **kwargs))
+
+        if chat_template and chat_template.lower() not in LlamaCpp.ChatTemplates:
+            log.warning(f"Unknown --chat-template={chat_template} specified for llama.cpp (skipping)")
+            log.warning(f"Valid chat templates for llama.cpp are:\n\n{pprint.pformat(LlamaCpp.ChatTemplates, indent=2)}")
+            chat_template = None   # TODO handle this better by having common chat template names
 
         cmd = [
             f'llama-server',
