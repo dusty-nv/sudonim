@@ -7,7 +7,7 @@ from sudonim import getenv, property_table
 env, log = getenv()
 
 MODEL_CACHE = {}
-MODEL_EXTENSIONS = ['.gguf']
+MODEL_EXTENSIONS = ['.gguf', '.so']
 
 
 def get_model_info(model: str, api_key: str=None, warn=False, refresh=False, **kwargs):

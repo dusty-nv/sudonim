@@ -28,7 +28,7 @@ def shell(cmd, echo=True, capture_output=False, dry_run=None, **kwargs):
         else:
             echo = default_msg
 
-        log.info(f"{echo}:\n\n  {endline.join(cmd)}\n")
+        log.info(f"{echo}\n\n  {endline.join(cmd)}\n")
 
     kwargs.setdefault('executable', '/bin/bash')
     kwargs.setdefault('shell', True)

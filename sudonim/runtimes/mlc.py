@@ -6,7 +6,8 @@ from pathlib import Path
 from sudonim import (
   download_model, hf_hub_exists, push_to_hub, 
   resolve_path, valid_model_repo, split_model_name,
-  get_model_url, shell, getenv, cudaShortVersion, NamedDict
+  get_model_name, get_model_repo, get_model_url, 
+  shell, getenv, cudaShortVersion, NamedDict
 )
 
 env, log = getenv()
@@ -70,6 +71,9 @@ class MLC:
         if not valid_model_repo(model):
             raise ValueError(f"Invalid local path or remote URL - this path could not be found locally, and was not a well-formed model repo/name:  {model}")
 
+        model_name = get_model_name(model)
+        is_quant = quantization in model_name and '-mlc' in model_name.lower()
+        
         if not is_quant:
             quant_repo = MLC.find_quantized(model, quantization, **kwargs)
             if quant_repo:
@@ -86,12 +90,16 @@ class MLC:
     @staticmethod
     def quantize(model_path : str, quantization: str=None, cache_mlc: str=None, cache_mode=env.CACHE_MODE, **kwargs):
         cache_mlc = resolve_path(cache_mlc)
-        quant_path = os.path.join(cache_mlc, os.path.basename(model_path)) + f"-{quantization}-MLC"
+        quant_path = os.path.join(cache_mlc, get_model_repo(model_path))
+        
+        if not os.path.isdir(quant_path):
+            quant_path += f"-{quantization}-MLC"
+
         weights = [x for x in Path(quant_path).glob('**/params_*.bin')]
 
         if weights and cache_mode.quantization:
-            #log.warning(f"Found existing quantized weights ({quant_path}), skipping quantization (set the CACHE_MODE='quantization:off' environment variable or '--cache-mode quantization:off' command-line argument to re-quantize the model)")
-            return os.path.dirname(weights[0])
+            log.debug(f"Found existing quantized weights ({quant_path}), skipping quantization")
+            return quant_path #os.path.dirname(weights[0])
 
         cmd = [
             f'mlc_llm convert_weight --quantization {MLC.QuantizationMap.get(quantization, quantization)}',
@@ -105,12 +113,16 @@ class MLC:
     @staticmethod
     def config(model_path : str, quant_path : str, quantization: str=None, cache_mode=env.CACHE_MODE, **kwargs):
         config_path = os.path.join(quant_path, 'mlc-chat-config.json')
+
         if os.path.isfile(config_path) and cache_mode.engine:
             return config_path
+        
         kwargs.setdefault('chat_template', MLC.get_chat_template(model_path))
+
         cmd = [f'mlc_llm gen_config --quantization {MLC.QuantizationMap.get(quantization, quantization)}']
         cmd += MLC.overrides(packed=False, **kwargs)
         cmd += [f'--output {quant_path}', f'{model_path}']
+
         shell(cmd, echo='Generating MLC configuration')
         return config_path
 
@@ -119,7 +131,7 @@ class MLC:
         model_lib = MLC.find_model_lib(quant_path)
 
         if model_lib and cache_mode.engine:
-            #log.warning(f"Found existing model library ({model_lib}), skipping model builder (set the CACHE_MODE='engine:off' environment variable or '--cache-mode engine:off' command-line argument to rebuild the model)")
+            log.debug(f"Found existing model library ({model_lib}), skipping model builder")
             return model_lib
     
         model_lib = os.path.join(quant_path, MLC.get_model_lib())
@@ -137,12 +149,10 @@ class MLC:
               max_batch_size: int=1, cache_mlc: str=None, 
               config_path: str=None, push: str=None, **kwargs):
         """ Start inference server after the model has been quantized & built """
-        model_path = Path(model_lib).parent
-        model_name = model_path.name
-
-        model_lib = model_lib.relative_to(resolve_path(cache_mlc))
-        model_dir = model_lib.parent
-
+        cache_mlc = resolve_path(cache_mlc)
+        model_dir = cache_mlc / Path(model_lib).parents[1].relative_to(cache_mlc)
+        model_name = get_model_name(model_lib)
+        
         if push:
             metadata = MLC.metadata(config_path, **kwargs)
             push_to_hub(model_dir, readme=metadata, **kwargs)
@@ -153,8 +163,8 @@ class MLC:
                f"--host {host} --port {port}"]
         cmd += MLC.overrides(exclude=['max_batch_size', 'chat_template'], **kwargs)
         cmd += [f"--model-lib {model_lib}", f"{model_name}"]
-        
-        return shell(cmd, cwd=model_dir.parent, echo='Loading model')
+
+        return shell(cmd, cwd=model_dir, echo=f"Loading model '{model_name}' from {model_dir}")
 
     @staticmethod
     def metadata(config_path: str, source_model: str=None, **kwargs):
