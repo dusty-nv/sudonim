@@ -87,7 +87,6 @@ def model_has_file(model: str, filename: str=None, **kwargs):
     Return true if the model repo on HF Hub has the specified file or not.
     """
     files = get_model_files(model, **kwargs)
-    print('MODEL_HAS_FILE', model, 'files', files, 'filename', filename, 'has?', bool(files and filename in files))
     return bool(files and filename in files)
 
 def model_is_file(model: str, extensions=MODEL_EXTENSIONS, **kwargs):
