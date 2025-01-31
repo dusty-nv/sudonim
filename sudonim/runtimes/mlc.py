@@ -17,20 +17,22 @@ class MLC:
     """
     Quantizations = [
         'q4f16_ft', 'q4f16_0', 'q4f16_1', 'q4f32_1', 'q4f16_2', 'q4f16_awq', 
-        'e5m2_f16', 'e4m3_f16', 'e4m3_f16_max_calibrate',
+        'e5m2_f16', 'e4m3_f16', 'e4m3_f16_max',
     ]
     
     QuantizationMap = {
-        'q4f16_autoawq': 'q4f16_awq',
+        'q4f16_awq': 'q4f16_autoawq',
         'e5m2_f16' : 'e5m2_e5m2_f16',
         'e4m3_f16' : 'e4m3_e4m3_f16',
-        'e4m3_f16_max_calibrate' : 'e4m3_f16_max_calibrate',
+        'e4m3_f16_max' : 'e4m3_f16_max_calibrate',
     }
 
     Link = {
         'name': 'MLC LLM',
         'url': 'https://llm.mlc.ai/',
     }
+
+    Name = "MLC"
 
     @staticmethod
     def deploy(model: str=None, quantization: str=None, **kwargs):
