@@ -118,6 +118,8 @@ def export_model( model: str=None, quantization: str=None,
             del cfg[mod_key]
             mod_key = new_key
 
+        title = mod.get('title', name)
+
         if 'links' not in mod:
             mod['links'] = {}
 
@@ -162,12 +164,16 @@ def export_model( model: str=None, quantization: str=None,
                 quant_key = f"{mod_key}-{quant_type}-{api_alt}"
                 #quant = cfg.setdefault(quant_key, {})
                 #quant_name = quant.setdefault('name', url.replace('hf.co/', '') + f'-{quant_type}-{api_alt.upper()}')
-                quant_title = f"{name} {title_sep} {api} {quant_type}" #quant.setdefault('title', f"{name} {title_sep} {api} {quant_type}")
+                api_name = api_cls.Name if hasattr(api_cls, 'Name') else api_cls.Link['name']
+                quant_title = f"{title} {title_sep} {api_name} {quant_type}" #quant.setdefault('title', f"{name} {title_sep} {api} {quant_type}")
 
                 for os_version, os_name in OS_VERSIONS.items():
                     os_key = f"{mod_key}-{quant_type}-{api_alt}-{os_version}"
+                    os_title = f"{quant_title} {title_sep} {os_name}"
 
                     nim = cfg.setdefault(os_key, {})
+
+                    nim.setdefault('title', os_title)
                     nim.setdefault('quantization', quant_type)
 
                     #nim_links = nim.setdefault('links', {})
