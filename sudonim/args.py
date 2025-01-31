@@ -4,7 +4,9 @@ import datetime
 import argparse
 import pprint
 
-from sudonim import RUNNERS, QUANTIZATIONS, run_command, getenv, parse_kwargs, __version__
+from sudonim import (
+  run_command, getenv, parse_kwargs, RUNNERS, QUANTIZATIONS, __version__, 
+)
 
 env, log = getenv()
 
