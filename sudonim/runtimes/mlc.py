@@ -16,10 +16,22 @@ class MLC:
     MLC/TVM deployment wrapper that automates. the steps to run a model in MLC.
     """
     Quantizations = [
-        'q4f16_0', 'q4f16_1', 'q4f32_1', 'q4f16_2', 'q4f16_ft', # 'q4f16_autoawq', 
-        'e5m2_e5m2_f16', 'e4m3_e4m3_f16', #'e4m3_e4m3_f16_max_calibrate',
+        'q4f16_ft', 'q4f16_0', 'q4f16_1', 'q4f32_1', 'q4f16_2', 'q4f16_awq', 
+        'e5m2_f16', 'e4m3_f16', 'e4m3_f16_max_calibrate',
     ]
     
+    QuantizationMap = {
+        'q4f16_autoawq': 'q4f16_awq',
+        'e5m2_f16' : 'e5m2_e5m2_f16',
+        'e4m3_f16' : 'e4m3_e4m3_f16',
+        'e4m3_f16_max_calibrate' : 'e4m3_f16_max_calibrate',
+    }
+
+    Link = {
+        'name': 'MLC LLM',
+        'url': 'https://llm.mlc.ai/',
+    }
+
     @staticmethod
     def deploy(model: str=None, quantization: str=None, **kwargs):
         """
@@ -42,21 +54,24 @@ class MLC:
         return MLC.serve(model_lib, quantization=quantization, config_path=config_path, **kwargs)
 
     @staticmethod
+    def find_quantized(model: str, quantization: str=None, **kwargs):
+        model_org, model_name = split_model_name(model)
+        quant_model = f'{model_name}-{quantization}-MLC'
+        quant_hosts = ['dusty-nv', 'mlc-ai']
+        for quant_host in quant_hosts:
+            quant_repo = os.path.join(quant_host, quant_model)
+            if hf_hub_exists(quant_repo, **kwargs):
+                return quant_repo
+
+    @staticmethod
     def download(model: str, quantization: str=None, cache_mode=env.CACHE_MODE, **kwargs):
         if not valid_model_repo(model):
             raise ValueError(f"Invalid local path or remote URL - this path could not be found locally, and was not a well-formed model repo/name:  {model}")
-        
-        model_org, model_name = split_model_name(model)
-        is_quant = quantization in model_name and '-mlc' in model_name.lower()
 
         if not is_quant:
-            quant_model = f'{model_name}-{quantization}-MLC'
-            quant_hosts = ['dusty-nv', 'mlc-ai']
-            for quant_host in quant_hosts:
-                quant_repo = os.path.join(quant_host, quant_model)
-                if hf_hub_exists(quant_repo, **kwargs):
-                    model, is_quant = quant_repo, True
-                    break
+            quant_repo = MLC.find_quantized(model, quantization, **kwargs)
+            if quant_repo:
+                model, is_quant = quant_repo, True
 
         if not is_quant and not hf_hub_exists(model, warn=True, **kwargs):
             raise IOError(f"could not locate or access model {model}")
@@ -77,7 +92,7 @@ class MLC:
             return os.path.dirname(weights[0])
 
         cmd = [
-            f'mlc_llm convert_weight --quantization {quantization}',
+            f'mlc_llm convert_weight --quantization {MLC.QuantizationMap.get(quantization, quantization)}',
             f"{model_path}",
             f"--output {quant_path}"
         ]
@@ -91,7 +106,7 @@ class MLC:
         if os.path.isfile(config_path) and cache_mode.engine:
             return config_path
         kwargs.setdefault('chat_template', MLC.get_chat_template(model_path))
-        cmd = [f'mlc_llm gen_config --quantization {quantization}']
+        cmd = [f'mlc_llm gen_config --quantization {MLC.QuantizationMap.get(quantization, quantization)}']
         cmd += MLC.overrides(packed=False, **kwargs)
         cmd += [f'--output {quant_path}', f'{model_path}']
         shell(cmd, echo='Generating MLC configuration')
@@ -120,8 +135,11 @@ class MLC:
               max_batch_size: int=1, cache_mlc: str=None, 
               config_path: str=None, push: str=None, **kwargs):
         """ Start inference server after the model has been quantized & built """
-        model_dir = os.path.dirname(model_lib)
-        model_lib = Path(model_lib).relative_to(resolve_path(cache_mlc))
+        model_path = Path(model_lib).parent
+        model_name = model_path.name
+
+        model_lib = model_lib.relative_to(resolve_path(cache_mlc))
+        model_dir = model_lib.parent
 
         if push:
             metadata = MLC.metadata(config_path, **kwargs)
@@ -132,9 +150,9 @@ class MLC:
         cmd = [f"mlc_llm serve --mode {mode} --device cuda",
                f"--host {host} --port {port}"]
         cmd += MLC.overrides(exclude=['max_batch_size', 'chat_template'], **kwargs)
-        cmd += [f"--model-lib {model_lib}", f"{model_dir}"]
+        cmd += [f"--model-lib {model_lib}", f"{model_name}"]
         
-        return shell(cmd, cwd=resolve_path(cache_mlc), echo='Loading model')
+        return shell(cmd, cwd=model_dir.parent, echo='Loading model')
 
     @staticmethod
     def metadata(config_path: str, source_model: str=None, **kwargs):

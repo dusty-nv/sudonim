@@ -19,6 +19,9 @@ def auto_update(enabled=SUDONIM_UPDATE, run_module='sudonim', **kwargs):
     """
     Pull / install the latest version from github when DOCKER_PULL or SUDONIM_UPDATE is set.
     This is 'sudonim' shell script entrypoint and is able to reload the module after updates.
+
+    You can also do 'sudonim update' or 'sudonim --update' which will call this function 
+    after the module has loaded, and the updates will take effect the next time it runs.
     """
     enabled = str(enabled).lower()
     if enabled in ['1', 'true', 'on', 'yes', 'y', 'enable', 'enabled', 'always', 'auto']:
@@ -34,3 +37,6 @@ def auto_update(enabled=SUDONIM_UPDATE, run_module='sudonim', **kwargs):
 
     if run_module:
         runpy.run_module('sudonim', run_name='__main__')
+
+def entrypoint():
+    auto_update()

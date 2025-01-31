@@ -6,24 +6,97 @@ from sudonim import getenv, property_table
 
 env, log = getenv()
 
-def hf_hub_exists(model: str, api_key: str=None, warn=False, **kwargs):
+MODEL_CACHE = {}
+MODEL_EXTENSIONS = ['.gguf']
+
+
+def get_model_info(model: str, api_key: str=None, warn=False, refresh=False, **kwargs):
     """
     Check if a model repo exists / is accessible on HF Hub or not.
+
+    If found, this returns a huggingface_hub.ModelInfo object (otherwise None)
+      https://huggingface.co/docs/huggingface_hub/main/en/package_reference/hf_api#huggingface_hub.ModelInfo
+
+    If ``warn=True`` and the model could not be found, it will log a warning to the terminal.
+    These warnings are disabled by default because these calls can be performed rapidly 
+    when scanning for prequantized checkpoints.
+
+    Also for this reason to avoid exceeding API limits unncessarily, these requests get cached.
+    The cache can be flushed by setting ``refresh=True`` and then the info will be pulled again.
     """
+    global MODEL_CACHE
+
     if not env.HAS_HF_HUB:
         raise ImportError(f"Attempted to use huggingface_hub without it being installed first")
     
     from huggingface_hub import model_info
 
+    if not refresh and model in MODEL_CACHE:
+        return MODEL_CACHE[model]
+
     try:
-        info = model_info(model, token=api_key)
-        log.debug(f"Downloaded model info for: {model}\n\n{pprint.pformat(info, indent=2)}")
+        model_repo = get_model_repo(model)
+        info = MODEL_CACHE[model] = model_info(model_repo, token=api_key)
+        log.debug(f"Downloaded model info for: {model} ({model_repo})\n\n{pprint.pformat(info, indent=2)}")
+        return info
     except Exception as error:
         if warn:
             log.warning(f"Could not find or access {model} on HF Hub ({error})")
+
+def get_model_name(path):
+    """
+    Extract the model name from path or URL, not including the org/username.
+    For example, ``Llama-3.2-3B-Instruct`` is just the model name and not the full repo ID.
+    """
+    return split_model_name(path)[1]
+
+def get_model_repo(path):
+    """
+    Extract the model `repo/name` from path or URL, including the org/username.
+    For example, ``meta-llama/Llama-3.2-3B-Instruct`` includes the full ID.
+    """
+    user, model = split_model_name(path)
+    return f'{user}/{model}' if user else model
+
+def get_model_files(model: str, **kwargs):
+    """
+    Retrieve the list of files included in the model before it's been downloaded.
+    If the model isn't found, this will return None. Set ``api_key`` kwarg for gated models.
+    """
+    info = get_model_info(model, **kwargs)
+
+    if not info:
+        return None
+    
+    return [x.rfilename for x in info.siblings]
+
+def model_has_file(model: str, filename: str=None, **kwargs):
+    """
+    Return true if the model repo on HF Hub has the specified file or not.
+    """
+    files = get_model_files(model, **kwargs)
+    print('MODEL_HAS_FILE', model, 'files', files, 'filename', filename, 'has?', bool(files and filename in files))
+    return bool(files and filename in files)
+
+def model_is_file(model: str, extensions=MODEL_EXTENSIONS, **kwargs):
+    """
+    Return true if this model path, repo/name, or URL is one that specifies
+    a singular model file (like GGUF) as opposted to the entire directory.
+    """
+    if not model:
         return False
     
-    return True
+    for ext in extensions:
+        if model.endswith(ext):
+            return True
+        
+    return False
+
+def hf_hub_exists(model: str, api_key: str=None, **kwargs):
+    """
+    Check if a model repo exists / is accessible on HF Hub or not.
+    """
+    return bool(get_model_info(model, api_key=api_key, **kwargs))
 
 def download_model(model: str, cache: str=None, api_key: str=None, flatten=False, download_kwargs={}, **kwargs):
     """
@@ -40,7 +113,7 @@ def download_model(model: str, cache: str=None, api_key: str=None, flatten=False
     model = model.replace('hf.co/', '')
     
     repo_path = Path(model)
-    repo_path = str(repo_path.parent if repo_path.suffix.lower() == '.gguf' else repo_path)
+    repo_path = str(repo_path.parent if repo_path.suffix.lower() in MODEL_EXTENSIONS else repo_path)
 
     if not cache:
         cache = 'hf'
@@ -206,29 +279,19 @@ def create_readme(path: str=None, filename: str='README.md', contents=None, over
         file.write(txt)
 
     return filename
+   
+def resolve_path(path, makedirs=True):
+    """
+    Perform substitutions and checks to resolve local paths
+    """
+    path = path.replace('$CACHE_ROOT', env.CACHE_ROOT)
 
-def split_model_name(path):
-    """
-    Return a (repo, name) tuple from the model's path or URL.
-    """
-    path = Path(path).parts
-    user = path[-2] if len(path) > 1 else None
-    return user, path[-1]
-
-def get_model_name(path):
-    """
-    Extract the model name from path or URL, not including the org/username.
-    For example, ``Llama-3.2-3B-Instruct`` is just the model name and not the full repo ID.
-    """
-    return split_model_name(path)[1]
-
-def get_model_repo(path):
-    """
-    Extract the model `repo/name` from path or URL, including the org/username.
-    For example, ``meta-llama/Llama-3.2-3B-Instruct`` includes the full ID.
-    """
-    user, model = split_model_name(path)
-    return f'{user}/{model}' if user else model
+    if makedirs:
+        p = Path(path)
+        p = str(p.parent) if (p.suffix.lower() in MODEL_EXTENSIONS) else path
+        os.makedirs(p, mode=0o755, exist_ok=True)
+    
+    return path
 
 def valid_model_repo(path):
     """
@@ -242,16 +305,15 @@ def valid_model_repo(path):
     only that the path is well-formed - for that see ``hf_hub_exists()``
     """
     return len(Path(path).parts) in [2,3]
-   
-def resolve_path(path, makedirs=True):
-    """
-    Perform substitutions and checks to resolve local paths
-    """
-    path = path.replace('$CACHE_ROOT', env.CACHE_ROOT)
 
-    if makedirs:
-        p = Path(path)
-        p = str(p.parent) if (p.suffix.lower() == '.gguf') else path
-        os.makedirs(p, mode=0o755, exist_ok=True)
-    
-    return path
+def split_model_name(path):
+    """
+    Return a (repo, name) tuple from the model's path or URL.
+    """
+    part = Path(path).parts
+
+    if model_is_file(path) and len(part) > 2:
+        part = part[:-1]
+
+    user = part[-2] if len(part) > 1 else None
+    return user, part[-1]

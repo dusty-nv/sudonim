@@ -23,3 +23,4 @@ def find_quantization_api(api: str=None, quantization: str=None, required=True, 
         raise ValueError(error)
     else:   
         log.warning(error)
+        

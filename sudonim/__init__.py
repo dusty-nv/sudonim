@@ -17,6 +17,6 @@ from .utils.shell import *
 from .utils.hub import *
 from .utils.docker import *
 
-from .backends import *
+from .runtimes import *
 from .runners import *
 from .args import *

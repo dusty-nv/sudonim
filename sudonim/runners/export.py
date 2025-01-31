@@ -4,17 +4,20 @@ import json
 import pprint
 
 from pathlib import Path
+from datetime import datetime
 
 from sudonim import (
   download_model, download_dataset, 
-  get_model_name, getenv, merge_dicts, 
-  QUANTIZATIONS, BACKENDS
+  get_model_name, get_model_repo,
+  get_model_info, model_has_file,
+  getenv, merge_dicts, 
+  QUANTIZATIONS, RUNTIMES
 )
 
 env, log = getenv()
 
 OS_VERSIONS = {
-    "r36.4.0": "JetPack 6.1+"
+    "jp6": "JetPack 6.1+"
 }
 
 def export_repo( model: str=None, dataset: str=None, **kwargs ):
@@ -23,6 +26,8 @@ def export_repo( model: str=None, dataset: str=None, **kwargs ):
 
     TODO import unknown model - find working combinations - export those
          for now the "find working combinations" part is manual
+
+         have this export the entire DB structure as opposed to one model
     """
     if dataset:
         location = export_dataset(dataset, **kwargs)
@@ -66,7 +71,6 @@ def export_model( model: str=None, quantization: str=None,
             dst[key] = src[key]
         if should_inherit(dst[key]):
             if isinstance(src[key], (str, list, tuple)):
-                print('setting ', key, dst[key], ' to ', src[key] + dst[key])
                 dst[key] = src[key] + dst[key]
             elif isinstance(src[key], dict):
                 merge_dicts(src[key], dst[key], replace=False)
@@ -128,10 +132,17 @@ def export_model( model: str=None, quantization: str=None,
         #if 'url' not in links['hf']:
         links['hf']['url'] = url
 
+        model_repo = get_model_repo(url)
+        model_info = get_model_info(model_repo, warn=True, **kwargs)
+
+        if model_info: 
+            mod.setdefault('created_at', str(model_info.created_at))
+            mod.setdefault('last_modified', str(model_info.last_modified))
+
         if not inherit:
             continue
 
-        for api, api_cls in BACKENDS.items():
+        for api, api_cls in RUNTIMES.items():
             api_alt = 'gguf' if api == 'llama_cpp' else api
             api_key = f"{mod_key}-{api_alt}"
 
@@ -142,6 +153,8 @@ def export_model( model: str=None, quantization: str=None,
                 api_tags = cfg[api_key].setdefault('tags', [])
                 if mod_key not in api_tags:
                     api_tags.insert(0,mod_key)
+                api_links = cfg[api_key].setdefault('links', {})
+                api_links.setdefault(api_key, api_cls.Link)
             else:
                 tags.insert(0,mod_key)
 
@@ -153,16 +166,40 @@ def export_model( model: str=None, quantization: str=None,
 
                 for os_version, os_name in OS_VERSIONS.items():
                     os_key = f"{mod_key}-{quant_type}-{api_alt}-{os_version}"
-                    obj = cfg.setdefault(os_key, {})
-                    print('OBJ OS KEY', os_key, 'TITLE', obj.setdefault('title', f"{quant_title} {title_sep} {os_name}"))
-                    obj.setdefault('quantization', quant_type)
-                    obj_tags = obj.setdefault('tags', [])
-                    for tag in tags + [quant_type, f"{api}:{os_version}"]:
-                        if tag not in obj_tags:
-                            obj_tags.append(tag)
-                    pprint.pprint(obj, indent=2)
 
-    log.info(f"Generated model metadata:\n\n{pprint.pformat(cfg, indent=2, sort_dicts=False)}")          
+                    nim = cfg.setdefault(os_key, {})
+                    nim.setdefault('quantization', quant_type)
+
+                    #nim_links = nim.setdefault('links', {})
+                    #nim_links.setdefault(api_key, api_cls.Link)
+                    
+                    nim_tags = nim.setdefault('tags', [])
+
+                    for tag in tags + [quant_type, f"{api}:{os_version}"]:
+                        if tag not in nim_tags:
+                            nim_tags.append(tag)
+
+                    if not model_info:
+                        raise ValueError(f"Could not locate model {model_repo}")
+                    
+                    if 'url' not in nim:
+                        quant_url = api_cls.find_quantized(
+                            model_repo, 
+                            quantization=quant_type, 
+                            warn=True, **kwargs
+                        )
+
+                        if quant_url:
+                            quant_info = get_model_info(quant_url)
+                            nim['url'] = quant_url
+                            nim['created_at'] = str(quant_info.created_at)
+                            nim['last_modified'] = str(quant_info.last_modified)
+
+    log.info(f"Generated model metadata:\n\n")
+    
+    for k,v in cfg.items():
+        print(f"{k}\n{pprint.pformat(v, indent=2)}\n")  
+
     log.info(f"Saving exported model configurations to {output}")
 
     with open(output, 'w') as file:

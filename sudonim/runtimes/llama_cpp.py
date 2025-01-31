@@ -1,5 +1,12 @@
+import os
+
 from pathlib import Path
-from sudonim import download_model, hf_hub_exists, shell, getenv
+
+from sudonim import (
+  download_model, hf_hub_exists, 
+  model_has_file, split_model_name,
+  shell, getenv
+)
 
 env, log = getenv()
 
@@ -9,6 +16,11 @@ class LlamaCpp:
     https://github.com/ggerganov/llama.cpp/blob/master/examples/server/README.md#openai-compatible-api-endpoints
     """
     Quantizations = ['q4_k_m', 'q4_k_l', 'q5_k_s', 'q5_k_m', 'q5_k_l', 'q6_k']
+
+    Link = {
+        'name': 'llama.cpp',
+        'url': 'https://github.com/ggerganov/llama.cpp',
+    }
 
     @staticmethod
     def deploy(model: str=None, quantization: str=None, 
@@ -49,14 +61,9 @@ class LlamaCpp:
         is_quant = (Path(model).suffix.lower() == '.gguf')
 
         if not is_quant:
-            quant_model = f'{Path(model).name}-GGUF'
-            quant_hosts = ['bartowski', 'dusty-nv']
-            for quant_host in quant_hosts:
-                quant_repo = os.path.join(quant_host, quant_model)
-                if hf_hub_exists(quant_repo, **kwargs):
-                    model = os.path.join(quant_repo, quantization.upper() + '.gguf')
-                    is_quant = True
-                    break
+            quant_repo = LlamaCpp.find_quantized(model, quantization, **kwargs)
+            if quant_repo:
+                model, is_quant = quant_repo, True
 
         if not is_quant and not hf_hub_exists(model, warn=True, **kwargs):
             raise IOError(f"could not locate or access model {model}")
@@ -65,3 +72,16 @@ class LlamaCpp:
             cache=kwargs.get('cache_llama_cpp' if is_quant else 'cache_hf'),
             **kwargs
         )
+    
+    @staticmethod
+    def find_quantized(model: str, quantization: str=None, **kwargs):
+        model_org, model_name = split_model_name(model)
+
+        quant_model = f'{model_name}-GGUF'
+        quant_hosts = ['bartowski']
+
+        for quant_host in quant_hosts:
+            quant_file = f'{model_name}-{quantization.upper()}.gguf'
+            quant_url = os.path.join(quant_host, quant_model)
+            if model_has_file(quant_url, quant_file, **kwargs):
+                return os.path.join(quant_url, quant_file)
