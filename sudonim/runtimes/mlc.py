@@ -155,7 +155,7 @@ class MLC:
         
         if push:
             metadata = MLC.metadata(config_path, **kwargs)
-            push_to_hub(model_dir, readme=metadata, **kwargs)
+            push_to_hub(Path(model_lib).parents[0], readme=metadata, **kwargs)
         
         mode = 'local' if max_batch_size > 1 else 'interactive'
 
