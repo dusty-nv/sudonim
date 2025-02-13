@@ -117,7 +117,8 @@ class MLC:
         if os.path.isfile(config_path) and cache_mode.engine:
             return config_path
         
-        kwargs.setdefault('chat_template', MLC.get_chat_template(model_path))
+        if 'chat_template' not in kwargs or not kwargs['chat_template']:
+            kwargs['chat_template'] = MLC.get_chat_template(model_path)
 
         cmd = [f'mlc_llm gen_config --quantization {MLC.QuantizationMap.get(quantization, quantization)}']
         cmd += MLC.overrides(packed=False, **kwargs)

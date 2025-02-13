@@ -34,6 +34,9 @@ def auto_update(enabled=SUDONIM_UPDATE, run_module='sudonim', **kwargs):
             result = subprocess.run(
                 cmd, cwd=cwd, executable='/bin/bash', shell=True, check=True, 
             )
+            import importlib
+            import sudonim
+            importlib.reload(sudonim)
         except Exception as error:
             cprint(f"\n{error}\n", attrs=['dark'])
 
