@@ -1,5 +1,6 @@
 
 import os
+import re
 import json
 import pprint
 
@@ -55,10 +56,21 @@ def export_model( model: str=None, quantization: str=None,
     with open(model) as file:
         cfg = json.load(file)
 
+    wildcards = {}
+    temp_cfg = {}
+
+    for k,v in cfg.items():
+        if '*' in k:
+            wildcards[k] = v
+        else:
+            temp_cfg[k] = v
+    
+    cfg = temp_cfg
+
     mod_keys = list(cfg.keys())
     mod_root = cfg[mod_keys[0]]
 
-    def should_inherit(x, selectors=['-', '_', ' ']):
+    def should_inherit(x, selectors=['*', '-', '_', ' ']):
         if not isinstance(x, str):
             return True
         return any([x.startswith(s) or x.endswith(s) for s in selectors])
@@ -200,6 +212,15 @@ def export_model( model: str=None, quantization: str=None,
                             nim['url'] = quant_url
                             nim['created_at'] = str(quant_info.created_at)
                             nim['last_modified'] = str(quant_info.last_modified)
+
+    for wild_key, wild_val in wildcards.items():
+        regex = re.compile(wild_key)
+        for cfg_key, cfg_val in cfg.items():
+            if not re.match(wild_key, cfg_key):
+                continue
+            log.debug(f"Updating wildcard match ({wild_key} => {cfg_key}) with:\n{wild_val}")
+            cfg_val.update(wild_val)
+            log.debug(f"Result:\n{cfg_val}")
 
     log.info(f"Generated model metadata:\n\n")
     
