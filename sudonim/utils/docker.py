@@ -36,7 +36,7 @@ class Docker:
             log.error(f"Exception trying to find container {names} ({error})")
 
     @staticmethod
-    def stop(name):
+    def stop(name, remove=True):
         try:
             name = Docker.find(name)
             if name:
@@ -46,7 +46,9 @@ class Docker:
         except Exception as error:
             log.error(f"Failed to stop container '{name}' ({error})")
             Docker.kill(name)
-        
+        if remove:
+            Docker.remove(name)
+
     @staticmethod
     def kill(name):
         name = Docker.find(name)
@@ -54,3 +56,15 @@ class Docker:
             c = Docker.client().containers.get(name)
             log.info(f"Killing container '{c.name}' ({c.id})")
             c.kill()
+
+    @staticmethod
+    def remove(name, force=True):
+        try:
+            name = Docker.find(name)
+            if not name:
+                return
+            c = Docker.client().containers.get(name)
+            log.info(f"Removing container '{c.name}' ({c.id})")
+            c.remove(force=force)
+        except Exception as error:
+            log.error(f"Failed to remove container '{name}' ({error})")
