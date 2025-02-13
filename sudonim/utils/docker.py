@@ -29,7 +29,7 @@ class Docker:
         try:
             for c in Docker.client().containers.list():
                 for name in names:
-                    if name in c.name:
+                    if name.lower().replace('_','-') in c.name.lower().replace('_','-'):
                         return c.name
             log.warning(f"Failed to find container by the names {names}")
         except Exception as error:
