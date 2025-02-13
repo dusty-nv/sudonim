@@ -152,8 +152,7 @@ def export_model( model: str=None, quantization: str=None,
         if model_info: 
             mod.setdefault('created_at', str(model_info.created_at))
             mod.setdefault('last_modified', str(model_info.last_modified))
-
-        if not inherit:
+        else: #if not inherit:
             continue
 
         for api, api_cls in RUNTIMES.items():
@@ -173,6 +172,8 @@ def export_model( model: str=None, quantization: str=None,
                 tags.insert(0,mod_key)
 
             for quant_type in api_cls.Quantizations:
+                if mod.get('blacklist') and quant_type in mod['blacklist']:
+                    continue
                 quant_key = f"{mod_key}-{quant_type}-{api_alt}"
                 #quant = cfg.setdefault(quant_key, {})
                 #quant_name = quant.setdefault('name', url.replace('hf.co/', '') + f'-{quant_type}-{api_alt.upper()}')
