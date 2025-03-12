@@ -69,7 +69,9 @@ def global_env(key=None, default=None):
 
     env.HF_TOKEN = default_env(['HF_TOKEN', 'HUGGINGFACE_TOKEN'])
 
+    env.HAS_AWQ = has_command('vila-eval')
     env.HAS_MLC = has_command('mlc_llm')
+    
     env.HAS_HF_HUB = try_import('huggingface_hub')
     env.HAS_NVIDIA_SMI = has_command('nvidia-smi')
     env.HAS_LLAMA_CPP = has_command('llama-server')

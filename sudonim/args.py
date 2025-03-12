@@ -44,6 +44,7 @@ class ArgParser(argparse.ArgumentParser):
 
         grp.add_argument('--max-context-len', type=int, default=None, help="Max number of tokens in the context, including prompt + reply")
         grp.add_argument('--max-batch-size', type=int, default=None, help="Max batch size for serving parallel requests")
+        grp.add_argument('--max-requests', type=int, default=None, help="Max number of requests in the sequence for generation or benchmarking")
         grp.add_argument('--prefill-chunk', type=int, default=None, help="Max number of tokens that can prefilled into the KV cache at once")
 
         grp = self.add_argument_group('SERVER', description="Networking configuration of the endpoint server.")

@@ -13,9 +13,12 @@ def run_benchmark( model: str=None, dataset: str=None, tokenizer: str=None, host
     if not env.HAS_MLC:
         raise RuntimeError(f"The benchmark client is installed in MLC, and could not find MLC installed in this environment (missing mlc_llm in $PATH)")
 
+    #if not model:
+    #    raise ValueError(f"Missing required argument:  --model")
+
     if not model:
-        raise ValueError(f"Missing required argument:  --model")
-     
+        model = tokenizer
+
     if not dataset:
         dataset = 'anon8231489123/ShareGPT_Vicuna_unfiltered/ShareGPT_V3_unfiltered_cleaned_split.json'
 
@@ -31,15 +34,16 @@ def run_benchmark( model: str=None, dataset: str=None, tokenizer: str=None, host
     with open(output_file + '.json', 'w') as file:
         json.dump(env, file, indent=2)
 
-    cmd = ['python3 -m mlc_llm.bench']
+    cmd = ['python3 -m sudonim.bench']
 
     cmd += [f'--dataset sharegpt']
     cmd += [f'--dataset-path {dataset_path}']
     cmd += [f'--tokenizer {tokenizer_path}']
-    cmd += [f'--api-endpoint openai']
-    cmd += [f'--num-requests 25']
+    cmd += [f'--model-name {model}']
+    cmd += [f'--api-endpoint openai']  # openai-chat
+    cmd += [f'--num-requests {kwargs.get("max_requests", 25)}']
     cmd += [f'--num-warmup-requests 3']
-    cmd += [f'--num-concurrent-requests 2']
+    cmd += [f'--num-concurrent-requests 1']
     cmd += [f'--num-gpus {env.NUM_GPU}']
     cmd += [f'--host {host}']
     cmd += [f'--port {port}']
