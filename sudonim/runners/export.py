@@ -156,6 +156,8 @@ def export_model( model: str=None, quantization: str=None,
             continue
 
         for api, api_cls in RUNTIMES.items():
+            if mod.get('blacklist') and (api in mod['blacklist'] or api.split(':')[0] in mod['blacklist']):
+                continue
             api_alt = 'gguf' if api == 'llama_cpp' else api
             api_key = f"{mod_key}-{api_alt}"
 
@@ -201,7 +203,7 @@ def export_model( model: str=None, quantization: str=None,
                     if not model_info:
                         raise ValueError(f"Could not locate model {model_repo}")
                     
-                    if 'url' not in nim:
+                    if 'url' not in nim and hasattr(api_cls, 'find_quantized'):
                         quant_url = api_cls.find_quantized(
                             model_repo, 
                             quantization=quant_type, 
