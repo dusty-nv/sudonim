@@ -14,7 +14,7 @@ class vLLM:
   
 
 class ollama:
-  Quantizations = ['q4_0']
+  Quantizations = ['q4_k_m']
 
   Link = {
     'name': 'ollama',

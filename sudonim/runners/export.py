@@ -65,6 +65,9 @@ def export_model( model: str=None, quantization: str=None,
         else:
             temp_cfg[k] = v
     
+    log.debug(f"Loaded keys: {list(temp_cfg.keys())}")
+    log.debug(f"Wildcards:   {list(wildcards.keys())}")
+
     cfg = temp_cfg
 
     mod_keys = list(cfg.keys())
@@ -219,6 +222,7 @@ def export_model( model: str=None, quantization: str=None,
     for wild_key, wild_val in wildcards.items():
         regex = re.compile(wild_key)
         for cfg_key, cfg_val in cfg.items():
+            log.debug(f"Checking wildcard specifier (key={wild_key} val={wild_val}) against '{cfg_key}'")
             if not re.match(wild_key, cfg_key):
                 continue
             log.debug(f"Updating wildcard match ({wild_key} => {cfg_key}) with:\n{wild_val}")
