@@ -3,7 +3,7 @@ from .mlc import *
 from .llama_cpp import *
 
 class vLLM:
-  Quantizations = ['fp16']
+  Quantizations = ['bnb4', 'fp8', 'fp16']
   
   Link = {
     'name': 'vLLM',
@@ -27,8 +27,8 @@ class ollama:
 RUNTIMES = {
   'mlc': MLC,
   'llama_cpp': LlamaCpp,
-  'vllm': vLLM,
   'ollama': ollama,
+  'vllm': vLLM,
 }
 
 QUANTIZATIONS = {
