@@ -94,6 +94,17 @@ def export_model( model: str=None, quantization: str=None,
 
         return dst[key]
 
+    def get_key(mod, key, default=None):
+        parent_key = mod['tags'][0] if 'tags' in mod and mod['tags'][0] in cfg else None
+        parent_mod = cfg[parent_key] if parent_key else None
+
+        if key in mod:
+            return mod[key]
+        elif parent_mod and key in parent_mod:
+            return parent_mod[key]
+        else:
+            return default
+
     for mod_idx, mod_key in enumerate(mod_keys):
         mod = cfg[mod_key]
         url = mod.get('url')
@@ -158,11 +169,15 @@ def export_model( model: str=None, quantization: str=None,
         else: #if not inherit:
             continue
 
-        for api, api_cls in RUNTIMES.items():
-            if mod.get('blacklist') and (api in mod['blacklist'] or api.split(':')[0] in mod['blacklist']):
+        for api in get_key(mod, 'runtimes', RUNTIMES.keys()):
+            blacklist = get_key(mod, 'blacklist')
+
+            if blacklist and (api in blacklist or api.split(':')[0] in blacklist):
                 continue
+
             api_alt = 'gguf' if api == 'llama_cpp' else api
             api_key = f"{mod_key}-{api_alt}"
+            api_cls = RUNTIMES[api]
 
             tags = [] # additional tags to add
 
@@ -176,8 +191,8 @@ def export_model( model: str=None, quantization: str=None,
             else:
                 tags.insert(0,mod_key)
 
-            for quant_type in api_cls.Quantizations:
-                if mod.get('blacklist') and quant_type in mod['blacklist']:
+            for quant_type in get_key(mod, 'quantizations', api_cls.Quantizations):
+                if blacklist and quant_type in blacklist:
                     continue
                 quant_key = f"{mod_key}-{quant_type}-{api_alt}"
                 #quant = cfg.setdefault(quant_key, {})

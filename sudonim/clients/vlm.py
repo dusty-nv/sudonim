@@ -91,7 +91,7 @@ for (text, img) in prompts:
       time_first = time.perf_counter()
 
     text_reply += delta
-    print(delta, end='')
+    print(delta, end='', flush=True)
 
   time_end = time.perf_counter()
   time_ftl = time_first-time_query
