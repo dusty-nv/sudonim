@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # First run 'pip install openai' and start the model server
-import openai, os, time
+import openai, os, time, requests
 
 # generate requests addressed to this URL 
 client = openai.OpenAI(
@@ -19,11 +19,25 @@ config = {
 if 'MAX_TOKENS' in os.environ:
   config['max_tokens'] = int(os.environ['MAX_TOKENS'])
 
-print(f"Connected to server: {client.base_url}")
-print(f"Found served models: {', '.join(models)}")
-print(f"Generation config:   {' '.join([str(k)+'='+str(v) for k,v in config.items()])}")
+print(f"Connected to server:  {client.base_url}")
+print(f"Found served models:  {', '.join(models)}")
+print(f"Generation config:    {' '.join([str(k)+'='+str(v) for k,v in config.items()])}")
 
-prompts = [  # generate responses to some default prompts
+# some APIs like vLLM and SGLang support clearing the prompt cache
+def try_request(url, msg='', method='post'):
+  try:
+    response = getattr(requests, method)(str(client.base_url).replace('/v1',url))
+    if response.status_code == 200:
+      print(f'{msg} {url}')
+    return response
+  except Exception as error:
+    return None
+
+try_request("/flush_cache", "Cleared prompt cache: SGLang")
+try_request("/reset_prefix_cache", "Cleared prompt cache: vLLM")
+
+# define some default prompts
+prompts = [  
   "Why did the LLM cross the road?",
   "If a train travels 120 miles in 2 hours, what is its average speed?",
   "Alice’s brother was half her age when she was 6. How old is her brother when she’s 42?",
@@ -31,6 +45,7 @@ prompts = [  # generate responses to some default prompts
   "Write a recipe for french onion soup."
 ]
 
+# generate responses with profiling
 for prompt in prompts:
   print(f"\n\033[94m{prompt}\033[00m\n")
 
