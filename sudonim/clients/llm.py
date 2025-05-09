@@ -2,7 +2,7 @@
 # First run 'pip install openai' and start the model server
 import openai, os, time
 
-# generate text+img->text requests addressed to this URL 
+# generate requests addressed to this URL 
 client = openai.OpenAI(
   base_url = os.environ.get('OPENAI_BASE_URL', 'http://0.0.0.0:9000/v1'),
   api_key = 'foo',  # not enforced
@@ -32,8 +32,11 @@ prompts = [  # generate responses to some default prompts
 ]
 
 for prompt in prompts:
-  time_beg = time.perf_counter()
-  time_tft = None  # Time To First Token latency (TTFT)
+  print(f"\n\033[94m{prompt}\033[00m\n")
+
+  start = time.perf_counter()
+  first = None
+  usage = None
 
   completion = client.chat.completions.create(  # send generation request
     messages=[{
@@ -42,11 +45,11 @@ for prompt in prompts:
     }], **config
   )
 
-  print(f"\n\033[94m{prompt}\033[00m\n")
-  
   for chunk in completion:
-    if not chunk.choices: # the last chunk has usage stats (not replies)
+    if hasattr(chunk, 'usage'): # the last chunk has perf stats
       usage = chunk.usage
+
+    if not chunk.choices: 
       continue
 
     delta = chunk.choices[0].delta 
@@ -60,18 +63,18 @@ for prompt in prompts:
 
       content = f'\033[2m{reasoning}\033[22m'  # dim CoT
 
-    if time_tft is None: # this was the first output token
-      time_tft = time.perf_counter()
+    if first is None: # this was the first output token
+      first = time.perf_counter()
 
     print(content, end='', flush=True)
 
-  # print performance metrics
-  time_gen = time.perf_counter() - time_tft
-  time_tft = time_tft - time_beg
+  # decode token/sec and Time To First Token latency (TTFT)
+  time_gen = time.perf_counter() - first
+  time_pre = first - start
 
   print(f"\n\n\033[32m> {config['model']} | " + " | ".join([
-    f"Prefill: {usage.prompt_tokens} tokens @ {usage.prompt_tokens/time_tft:.2f} t/s" if usage else '',
-    f"Time to First Token: {time_tft:.2f}s",
+    f"Prefill: {usage.prompt_tokens} tokens @ {usage.prompt_tokens/time_pre:.2f} t/s" if usage else '',
+    f"Time to First Token: {time_pre:.2f}s",
     f"Generation: {usage.completion_tokens} tokens @ {usage.completion_tokens/time_gen:.2f} t/s" if usage else '',
-    f"Total: {time_tft + time_gen:.2f}s",
+    f"Total: {time_pre + time_gen:.2f}s",
   ]) + " \033[00m")
